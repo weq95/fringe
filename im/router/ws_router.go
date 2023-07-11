@@ -133,13 +133,14 @@ func (w *WSRouter) Write() {
 
 			if resp.Client == testClient {
 				var result interface{}
-				if err = json.Unmarshal(resp.Data, &result); err != nil {
-					cfg.Log.Error(err.Error())
-					continue
-				}
 				var message = map[string]interface{}{
 					"protocol": resp.Protocol,
-					"result":   result,
+					"result":   "",
+				}
+				if err = json.Unmarshal(resp.Data, &result); err != nil {
+					message["result"] = string(resp.Data)
+				} else {
+					message["result"] = result
 				}
 
 				var byteData []byte
