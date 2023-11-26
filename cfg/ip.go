@@ -34,3 +34,20 @@ func LocalIp(addr string) (bool, error) {
 
 	return false, nil
 }
+
+func GetFreePort() (int, error) {
+	var addr, err = net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil {
+		return 0, err
+	}
+
+	var l, err01 = net.ListenTCP("tcp", addr)
+	if err01 != nil {
+		return 0, err01
+	}
+
+	defer l.Close()
+
+	return l.Addr().(*net.TCPAddr).Port, nil
+
+}
