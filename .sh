@@ -44,16 +44,22 @@ for service in "${apps[@]}"; do
     chmod 755 "/opt/$portDir/$service"
     echo -e "$service 最新启动包复制成功"
 
-    processNum=$(ps -ef | grep "$service" | grep -v grep | wc -l)
+while true; do
+    processNum=$(ps -ef | grep $service | grep -v grep | wc -l)
     if [ $processNum -eq 0 ]; then
        echo -e "/opt/$portDir/$service > /dev/null 2>&1 &"
        nohup /opt/$portDir/$service > /dev/null 2>&1 &
-       echo -e "command executed successfully, start $service success. 服务已启动, 执行后续操作"
-       # 查看日志命令
-       echo "tail -f /opt/$portDir/$service/logs/$(date+%Y%m%d).log -n 50"
-       echo -e "------------------ 进入15秒等待状态... ------------------"
-       sleep 15
-       break
-    fi
+       echo -e "command executed successfully."
 
+    else
+      serviceInfo=$(ps -ef | grep "$service")
+      echo -e "service-info[$service]: \r\r$serviceInfo\r"
+      echo -e "start $service success. 服务已启动, 执行后续操作"
+      # 查看日志命令
+      echo -e "tail -f /opt/$portDir/$service/logs/$(date +%Y%m%d).log -n 50"
+      echo -e "------------------ 进入15秒等待状态... ------------------"
+      sleep 15
+      break
+    fi
+done
 done
