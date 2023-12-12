@@ -2,19 +2,18 @@
 
 branch=master
 appName=wallet
-
+if [ ! -d "/opt/seamless_wallet/" ]; then
+     git clone git@ip:demo/seamless_wallet.git
+fi
 cd /opt/seamless_wallet/
 git reset --hard origin/${branch}
 git pull
 echo -e "拉取最新代码成功"
-
 go build -o ../wallet
-
 echo -e "项目 [wallet] 编译成功"
 
-
 # 应用程序数组
-apps=("wallet8070" "wallet8071")
+apps=("wallet8081" "wallet8082")
 
 # 循环处理每个服务
 for service in "${apps[@]}"; do
