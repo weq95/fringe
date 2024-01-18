@@ -113,6 +113,7 @@ func main() {
 
 	var quit = make(chan os.Signal, 1)
 
+	// _ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 	signal.Notify(quit, os.Interrupt, os.Kill)
 
 	<-quit
