@@ -26,7 +26,7 @@ func (l *CustomLogger) Printf(_ string, i ...interface{}) {
 	}
 }
 
-func NewLogger(level int8) {
+func NewLogger(level int8) *CustomLogger {
 	var _, file = filepath.Split(os.Args[0])
 	var dir, _ = os.Getwd()
 
@@ -35,6 +35,48 @@ func NewLogger(level int8) {
 
 	var log = &CustomLogger{filePath: filePath, level: level}
 	log.NewLogFile()
+
+	return log
+}
+
+// CleanLogFiles 删除该目录下3天前 *.log 文件
+func CleanLogFiles(directory string) error {
+	if directory == "" {
+		var dir, err = os.Getwd()
+		if err != nil {
+			return err
+		}
+
+		directory = filepath.Join(dir, "logs")
+	}
+	var timeAgo = time.Now().AddDate(0, 0, -3)
+	var files, err = os.ReadDir(directory)
+	zap.L().Warn(fmt.Sprintf("清理目录文件：%s", directory))
+	if err != nil {
+		return err
+	}
+
+	for _, file := range files {
+		if file.IsDir() {
+			continue
+		}
+
+		var info, err01 = file.Info()
+		if err01 != nil {
+			continue
+		}
+
+		if filepath.Ext(file.Name()) != ".log" {
+			continue
+		}
+		if info.ModTime().Before(timeAgo) {
+			if err = os.Remove(directory + "/" + file.Name()); err != nil {
+				zap.L().Error(fmt.Sprintf("删除文件失败：%s，错误：%+v", file.Name(), err))
+			}
+		}
+	}
+
+	return err
 }
 
 func (l *CustomLogger) NewLogFile() {
@@ -58,7 +100,7 @@ func (l *CustomLogger) NewLogFile() {
 	gin.DefaultErrorWriter = l
 
 	zap.ReplaceGlobals(l.StartLogger(l.TextFormat()))
-
+	go CleanLogFiles(l.filePath)
 }
 
 func (l CustomLogger) Write(p []byte) (n int, err error) {
@@ -69,6 +111,7 @@ func (l CustomLogger) Write(p []byte) (n int, err error) {
 
 func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 	var caller = func(caller zapcore.EntryCaller, enc zapcore.PrimitiveArrayEncoder) {
+		//enc.AppendString(caller.FullPath())
 		enc.AppendString(path.Base(caller.FullPath()))
 	}
 	// file 文件输出格式
@@ -88,7 +131,7 @@ func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 		CallerKey:    "fs",
 		MessageKey:   "msg",
 		EncodeCaller: caller,
-		EncodeLevel:  zapcore.CapitalLevelEncoder,
+		EncodeLevel:  zapcore.CapitalColorLevelEncoder,
 		EncodeTime:   zapcore.TimeEncoderOfLayout(time.Kitchen),
 	}
 
