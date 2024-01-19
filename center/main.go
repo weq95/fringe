@@ -12,8 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 	"net/http"
-	"os"
-	"os/signal"
 	"strconv"
 	"time"
 )
@@ -40,17 +38,17 @@ func main() {
 		})
 	if err != nil {
 		zap.L().Error(err.Error())
-		os.Exit(1)
+		return
 	}
 	defer m.ServerClosed()
 
 	if err = cfg.NewDatabase(); err != nil {
 		zap.L().Error(err.Error())
-		os.Exit(1)
+		return
 	}
 	if err = cfg.NewRedisClient(); err != nil {
 		zap.L().Error(err.Error())
-		os.Exit(1)
+		return
 	}
 	defer cfg.ClosedRedis()
 
@@ -93,9 +91,9 @@ func main() {
 			if err != nil {
 				return
 			}
-
-			c.JSON(http.StatusOK, gin.H{"code": http.StatusInternalServerError, "message": "server error"})
+			
 			c.Abort()
+			c.JSON(http.StatusOK, gin.H{"code": http.StatusInternalServerError, "message": "server error"})
 		}),
 	)
 	r.POST("/login", business.Login)
@@ -106,17 +104,13 @@ func main() {
 		Handler: r,
 	}
 	go func() {
+		zap.L().Info("程序 [Center] 已启动...")
 		if err = srv.ListenAndServe(); err != nil && !errors.Is(http.ErrServerClosed, err) {
 			zap.L().Fatal(fmt.Sprintf("listen：%+v", err))
 		}
 	}()
 
-	var quit = make(chan os.Signal, 1)
-
-	// _ = syscall.Kill(os.Getpid(), syscall.SIGINT)
-	signal.Notify(quit, os.Interrupt, os.Kill)
-
-	<-quit
+	<-cfg.WaitCtrlC()
 	zap.L().Info("Shutdown Server ...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
