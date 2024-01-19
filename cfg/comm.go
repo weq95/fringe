@@ -4,8 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"io"
+	"math"
 	"math/big"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 )
 
 const JsonFilePath = "./temp/json/" // excel-json 下载文件目录
@@ -39,20 +43,9 @@ func HttpGet(url string, result interface{}) error {
 	return json.Unmarshal(body, result)
 }
 
-// ExitApplication 手动退出应用
-func ExitApplication() {
-	var app, err = os.FindProcess(os.Getpid())
-	if err != nil {
-		Log.Error(err.Error())
-		return
-	}
-	if err = app.Signal(os.Interrupt); err != nil {
-		// Windows 需要在这里处理退出清理逻辑
-		var handler, _ = syscall.GetCurrentProcess()
-		if err = syscall.TerminateProcess(handler, 0); err != nil {
-			Log.Error("Windows Failed to terminate process " + err.Error())
-		}
-	}
+// ExitApp 手动退出应用
+func ExitApp() {
+	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 }
 
 // WaitCtrlC 创建等待退出管道
@@ -61,4 +54,9 @@ func WaitCtrlC() <-chan os.Signal {
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM, syscall.SIGINT, syscall.SIGKILL)
 
 	return sigCh
+}
+
+// Yuan2Fen CNY：元转分
+func Yuan2Fen(yuan float64) int64 {
+	return int64(math.Ceil(yuan * 100))
 }
