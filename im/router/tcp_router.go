@@ -2,7 +2,6 @@ package router
 
 import (
 	"fmt"
-	"fringe/cfg"
 	"fringe/im/business"
 	"fringe/netsrv"
 	"go.uber.org/zap"
@@ -43,7 +42,7 @@ func (t TcpRouter) Callback(args ...interface{}) {
 	var protocol = args[0].(uint32)
 	var handler, ok = t.actions[protocol]
 	if !ok {
-		cfg.Log.Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
+		zap.L().Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
 		return
 	}
 
@@ -64,12 +63,12 @@ func NewTcpRouter() *TcpRouter {
 func (t TcpRouter) Write(protocol uint32, b []byte) {
 	var srv, ok = netsrv.GetManagerClient(t.Name())
 	if !ok {
-		cfg.Log.Error(fmt.Sprintf("client(%s) not found.", t.Name()))
+		zap.L().Error(fmt.Sprintf("client(%s) not found.", t.Name()))
 		return
 	}
 
 	if _, err := srv.Write(protocol, b); err != nil {
-		cfg.Log.Error(err.Error(),
+		zap.L().Error(err.Error(),
 			zap.Uint32("protocol", protocol),
 			zap.Binary("data", b))
 	}

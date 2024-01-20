@@ -18,13 +18,13 @@ func SingleChatForwarding(msg *models.UserChat, b []byte) {
 	var ctx = context.TODO()
 	var cmd = cfg.GetRedis().HGet(ctx, cfg.UserServer, strconv.FormatUint(msg.ToUser, 10))
 	if cmd.Err() != nil {
-		cfg.Log.Error(cmd.Err().Error(), zap.Binary("data", b))
+		zap.L().Error(cmd.Err().Error(), zap.Binary("data", b))
 		return
 	}
 
 	var srv, ok = netsrv.GetManagerServer()
 	if !ok {
-		cfg.Log.Warn("服务不存在")
+		zap.L().Warn("服务不存在")
 		return
 	}
 
@@ -40,7 +40,7 @@ func SingleChatForwarding(msg *models.UserChat, b []byte) {
 func GroupChatForwarding(fromUserid uint64, data []byte) {
 	var srv, ok = netsrv.GetManagerServer()
 	if !ok {
-		cfg.Log.Warn("服务不存在", zap.Binary("data", data))
+		zap.L().Warn("服务不存在", zap.Binary("data", data))
 		return
 	}
 
@@ -48,7 +48,7 @@ func GroupChatForwarding(fromUserid uint64, data []byte) {
 	var userIds []string
 	var cmd, err = cfg.GetRedis().HMGet(context.TODO(), cfg.UserServer, userIds...).Result()
 	if err != nil {
-		cfg.Log.Error(err.Error(), zap.Strings("ids", userIds), zap.Binary("data", data))
+		zap.L().Error(err.Error(), zap.Strings("ids", userIds), zap.Binary("data", data))
 		return
 	}
 	var onlineUser = make(map[uint64]string, len(cmd))

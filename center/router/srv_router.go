@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"fringe/center/business"
-	"fringe/cfg"
 	"fringe/netsrv"
 	"go.uber.org/zap"
 	"net"
@@ -37,7 +36,7 @@ func (s *SrvRouter) Serviceable(ip string, port uint16) {
 	s.clients[ip].Closed = false
 	s.clients[ip].Addr = ip + ":" + strconv.Itoa(int(port))
 
-	cfg.Log.Info(fmt.Sprintf("%s:%d 服务已开启", ip, port))
+	zap.L().Info(fmt.Sprintf("%s:%d 服务已开启", ip, port))
 }
 
 func (s *SrvRouter) AddClient(key string, conn net.Conn) {
@@ -67,7 +66,7 @@ func (s *SrvRouter) CenterForwarding(clientIp string, protocol uint32, data []by
 	}
 
 	if _, err := client.Write(protocol, data); err != nil {
-		cfg.Log.Error(err.Error(), zap.Uint32("id", protocol), zap.Binary("data", data))
+		zap.L().Error(err.Error(), zap.Uint32("id", protocol), zap.Binary("data", data))
 		return err
 	}
 
@@ -95,7 +94,7 @@ func (s *SrvRouter) Callback(args ...interface{}) {
 	var protocol = args[0].(uint32)
 	var handler, ok = s.actions[protocol]
 	if !ok {
-		cfg.Log.Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
+		zap.L().Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
 		return
 	}
 

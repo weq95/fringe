@@ -32,7 +32,7 @@ func (u *UserChat) UnmarshalBinary(data []byte) error {
 func OneChatBatchInsert(message []*UserChat) error {
 	var err = cfg.GetDB().Create(message).Error
 	if err != nil {
-		cfg.Log.Error(err.Error(), zap.Any("one", message))
+		zap.L().Error(err.Error(), zap.Any("one", message))
 	}
 	return nil
 }
@@ -50,7 +50,7 @@ func HistoryInfo(userid uint64, pageSize int) (int64, []*UserChat) {
 		Order("id ASC").Limit(pageSize).Offset(0).
 		Find(&message).Error
 	if err != nil {
-		cfg.Log.Error(err.Error())
+		zap.L().Error(err.Error())
 	}
 	return count, message
 }
@@ -60,7 +60,7 @@ func UpdateHaveRead(ids []uint) error {
 	var err = cfg.GetDB().Table(new(UserChat).TableName()).Where("id IN ?", ids).
 		Updates(map[string]interface{}{"read": 1}).Error
 	if err != nil {
-		cfg.Log.Error(err.Error())
+		zap.L().Error(err.Error())
 	}
 
 	return err

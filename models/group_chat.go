@@ -30,7 +30,7 @@ func (u *GroupChat) UnmarshalBinary(data []byte) error {
 func GroupChatBatchInsert(message []*GroupChat) error {
 	var err = cfg.GetDB().Create(message).Error
 	if err != nil {
-		cfg.Log.Error(err.Error(), zap.Any("group", message))
+		zap.L().Error(err.Error(), zap.Any("group", message))
 	}
 	return nil
 }

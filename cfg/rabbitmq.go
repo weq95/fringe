@@ -66,14 +66,14 @@ func (m *MQManager) AddQueue(plugin RabbitMQQueue) {
 
 	m.queue[plugin.Queue()] = plugin
 	if err := plugin.InitQueue(plugin); err != nil {
-		Log.Error("AddQueue InitQueue", zap.Error(err))
+		zap.L().Error("AddQueue InitQueue", zap.Error(err))
 		os.Exit(1)
 		return
 	}
 	go func() {
 		var err = plugin.Consume(plugin, plugin.Queue())
 		if err != nil {
-			Log.Error(fmt.Sprintf("Queue: [%s] Consume Err", plugin.Queue()),
+			zap.L().Error(fmt.Sprintf("Queue: [%s] Consume Err", plugin.Queue()),
 				zap.Error(err))
 		}
 	}()
@@ -86,7 +86,7 @@ func (m *MQManager) AddDlxQueue(plugin RabbitMQDlxQueue) {
 
 	m.dlxQueue[plugin.DlxQueue(plugin)] = plugin
 	if err := plugin.InitDlxQueue(plugin); err != nil {
-		Log.Error("AddDlxQueue InitDlxQueue", zap.Error(err))
+		zap.L().Error("AddDlxQueue InitDlxQueue", zap.Error(err))
 		os.Exit(1)
 		return
 	}
@@ -94,7 +94,7 @@ func (m *MQManager) AddDlxQueue(plugin RabbitMQDlxQueue) {
 	go func() {
 		var err = plugin.Consume(plugin, plugin.DlxQueue(plugin))
 		if err != nil {
-			Log.Error(fmt.Sprintf("DlxQueue: [%s] Consume Err",
+			zap.L().Error(fmt.Sprintf("DlxQueue: [%s] Consume Err",
 				plugin.DlxQueue(plugin)),
 				zap.Error(err))
 		}

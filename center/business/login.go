@@ -8,6 +8,7 @@ import (
 	"fringe/netsrv"
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
+	"go.uber.org/zap"
 	"net/http"
 )
 
@@ -80,12 +81,12 @@ func Login(ctx *gin.Context) {
 
 // Heartbeat 心跳包
 func Heartbeat(data []byte, responseWriter func(uint32, []byte)) {
-	cfg.Log.Info(fmt.Sprintf("心跳: %s", string(data)))
+	zap.L().Info(fmt.Sprintf("心跳: %s", string(data)))
 	responseWriter(1000, []byte(`pong`))
 }
 
 func UpdateSrvStatus(data []byte, _ func(uint32, []byte)) {
-	cfg.Log.Info(fmt.Sprintf("ws信息: %s", string(data)))
+	zap.L().Info(fmt.Sprintf("ws信息: %s", string(data)))
 	type ServeInfo struct {
 		Ip   string `json:"ip"`
 		Port uint16 `json:"port"`

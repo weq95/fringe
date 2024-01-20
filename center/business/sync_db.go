@@ -55,7 +55,7 @@ func ChatInfoSyncDB() {
 			if !ok {
 				return
 			}
-			cfg.Log.Debug("", zap.Any("msg", msg))
+			zap.L().Debug("", zap.Any("msg", msg))
 			switch msg.(type) {
 			case *models.UserChat:
 				one.Info = append(one.Info, msg.(*models.UserChat))
@@ -89,13 +89,13 @@ func SingleChatSubPub() {
 	for true {
 		var msg, err = pubsub.ReceiveMessage(ctx)
 		if err != nil {
-			cfg.Log.Error(err.Error())
+			zap.L().Error(err.Error())
 			break
 		}
 
 		var info models.UserChat
 		if err = json.Unmarshal([]byte(msg.Payload), &info); err != nil {
-			cfg.Log.Error(err.Error(), zap.String("info", msg.Payload))
+			zap.L().Error(err.Error(), zap.String("info", msg.Payload))
 			continue
 		}
 
@@ -115,13 +115,13 @@ func GroupChatSubPub() {
 	for true {
 		var msg, err = pubsub.ReceiveMessage(ctx)
 		if err != nil {
-			cfg.Log.Error(err.Error())
+			zap.L().Error(err.Error())
 			break
 		}
 
 		var info models.GroupChat
 		if err = json.Unmarshal([]byte(msg.Payload), &info); err != nil {
-			cfg.Log.Error(err.Error(), zap.String("info", msg.Payload))
+			zap.L().Error(err.Error(), zap.String("info", msg.Payload))
 			continue
 		}
 

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"fringe/cfg"
+	"go.uber.org/zap"
 	"io"
 	"net"
 	"regexp"
@@ -49,7 +49,7 @@ func (t *Client) connect() (*Client, error) {
 	if err != nil {
 		return t, errors.New(err.Error())
 	}
-	cfg.Log.Info(fmt.Sprintf("[%s]: [%s]链接已建立", t.Name(), t.Addr))
+	zap.L().Info(fmt.Sprintf("[%s]: [%s]链接已建立", t.Name(), t.Addr))
 	t.Conn = conn
 	t.Closed = false
 	t.RetriesTimes = 0
@@ -99,7 +99,7 @@ func (t *Client) HandleConn() error {
 	for {
 		var err = reader.Read()
 		if err != nil && err != io.EOF {
-			cfg.Log.Error(fmt.Sprintf("[%s]: %s", t.Name(), err.Error()))
+			zap.L().Error(fmt.Sprintf("[%s]: %s", t.Name(), err.Error()))
 			return err
 		}
 	}

@@ -47,7 +47,7 @@ func UserLoginEvent(user *User, _ []byte) {
 
 		var byteData, err = json.Marshal(message)
 		if err != nil {
-			cfg.Log.Error(err.Error())
+			zap.L().Error(err.Error())
 			break
 		}
 
@@ -77,13 +77,13 @@ func UserLogOutEvent(user *User, _ []byte) {
 func GroupMessage(_ *User, data []byte) {
 	var message models.UserChat
 	if err := json.Unmarshal(data, &message); err != nil {
-		cfg.Log.Error(fmt.Sprintf("消息格式错误: %s", err.Error()))
+		zap.L().Error(fmt.Sprintf("消息格式错误: %s", err.Error()))
 		return
 	}
 
 	var err = cfg.GetRedis().Publish(context.TODO(), cfg.GroupChatPubSub, message).Err()
 	if err != nil {
-		cfg.Log.Error(err.Error(), zap.Any("data", message))
+		zap.L().Error(err.Error(), zap.Any("data", message))
 	}
 }
 
@@ -91,14 +91,14 @@ func GroupMessage(_ *User, data []byte) {
 func SingleChat(_ *User, data []byte) {
 	var message models.UserChat
 	if err := json.Unmarshal(data, &message); err != nil {
-		cfg.Log.Error(fmt.Sprintf("消息格式错误: %s", err.Error()))
+		zap.L().Error(fmt.Sprintf("消息格式错误: %s", err.Error()))
 		return
 	}
 
 	var pubSubFn = func(message models.UserChat) {
 		var err = cfg.GetRedis().Publish(context.TODO(), cfg.SingleChatPubSub, message).Err()
 		if err != nil {
-			cfg.Log.Error(err.Error(), zap.Any("data", message))
+			zap.L().Error(err.Error(), zap.Any("data", message))
 		}
 	}
 	var info, ok = GetUser(message.ToUser)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"fringe/cfg"
+	"go.uber.org/zap"
 	"os"
 	"strings"
 	"time"
@@ -89,7 +90,7 @@ func (m *Manager) loopRead() (*Manager, error) {
 				srv.Lock.Unlock()
 				_ = cfg.Val(func(c *cfg.AppCfg) interface{} {
 					if m.clientConn[srv.Name()].RetriesTimes > c.RetriesTimes {
-						cfg.Log.Error("tcp拨号超出最大重试次数, 程序退出中...")
+						zap.L().Error("tcp拨号超出最大重试次数, 程序退出中...")
 						os.Exit(2)
 					}
 					return nil
@@ -126,7 +127,7 @@ func (m *Manager) heartbeat() (*Manager, error) {
 		}
 	}()
 
-	cfg.Log.Info("tcp 心跳检测已开启...")
+	zap.L().Info("tcp 心跳检测已开启...")
 	return m, nil
 }
 

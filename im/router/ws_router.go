@@ -45,7 +45,7 @@ func (w *WSRouter) Callback(args ...interface{}) {
 	var protocol = args[0].(uint32)
 	var handler, ok = w.actions[protocol]
 	if !ok {
-		cfg.Log.Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
+		zap.L().Error(fmt.Sprintf("(%d) 协议号不存在", protocol))
 		return
 	}
 
@@ -111,7 +111,7 @@ func WsUpGrader(ctx *gin.Context) {
 		},
 	}).Upgrade(ctx.Writer, ctx.Request, nil)
 	if err != nil {
-		cfg.Log.Error("ws 升级失败: ", zap.Error(err))
+		zap.L().Error("ws 升级失败: ", zap.Error(err))
 		return
 	}
 
@@ -121,13 +121,13 @@ func WsUpGrader(ctx *gin.Context) {
 func (w *WSRouter) Write() {
 	var err error
 	var logErrFn = func(id uint32, data []byte) {
-		cfg.Log.Error(err.Error(), zap.Uint32("id", id), zap.ByteString("data", data))
+		zap.L().Error(err.Error(), zap.Uint32("id", id), zap.ByteString("data", data))
 	}
 	for true {
 		select {
 		case resp, ok := <-w.ch:
 			if !ok {
-				cfg.Log.Warn("chan closed")
+				zap.L().Warn("chan closed")
 				return
 			}
 
@@ -170,7 +170,7 @@ func (w *WSRouter) ReadMsg(conn *websocket.Conn, info *cfg.CustomClaims) {
 	var err = cfg.GetRedis().HSet(context.TODO(), cfg.UserServer, info.Userid,
 		strings.Split(info.ServeIp, ":")[0]).Err()
 	if err != nil {
-		cfg.Log.Error("链接升级失败: " + err.Error())
+		zap.L().Error("链接升级失败: " + err.Error())
 		return
 	}
 	go business.UserLoginEvent(userInfo, []byte{})
@@ -226,7 +226,7 @@ func (w *WSRouter) SendMsg(req *Req) {
 		return
 	}
 
-	cfg.Log.Error(fmt.Sprintf("%s 驱动不存在", w.Name()))
+	zap.L().Error(fmt.Sprintf("%s 驱动不存在", w.Name()))
 }
 
 func (w *WSRouter) PostmanDebugApi(conn *websocket.Conn, userid uint64, message []byte) {

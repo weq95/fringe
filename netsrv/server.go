@@ -50,7 +50,7 @@ func (s *Server) TcpAccept() {
 	for true {
 		var conn, err = s.Accept()
 		if err != nil {
-			cfg.Log.Error(err.Error())
+			zap.L().Error(err.Error())
 			return
 		}
 
@@ -63,7 +63,7 @@ func (s *Server) TcpAccept() {
 
 				var ipInfo PublicIP
 				if err = cfg.HttpGet("https://httpbin.org/ip", &ipInfo); err != nil {
-					cfg.Log.Error("公网IP获取错误, 程序退出...", zap.Error(err))
+					zap.L().Error("公网IP获取错误, 程序退出...", zap.Error(err))
 					os.Exit(2)
 				}
 
@@ -71,7 +71,7 @@ func (s *Server) TcpAccept() {
 			}
 
 			s.TcpClients.AddClient(clientAddr, conn)
-			cfg.Log.Info(fmt.Sprintf("%s client接入", clientAddr))
+			zap.L().Info(fmt.Sprintf("%s client接入", clientAddr))
 			defer func(clientAddr string) {
 				_ = conn.Close()
 				s.TcpClients.DeleteClient(clientAddr)
@@ -198,7 +198,7 @@ func (r *ServerReader) processData(conn net.Conn) error {
 
 		r.srv.Callback(protocol, bodyData, func(protocol uint32, data []byte) {
 			if _, err := r.srv.(*Server).Write(protocol, data, conn); err != nil {
-				cfg.Log.Error(err.Error(), zap.Binary("data", data))
+				zap.L().Error(err.Error(), zap.Binary("data", data))
 			}
 		})
 
