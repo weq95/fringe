@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"fringe/cfg"
-	"go.uber.org/zap"
 	"net/http"
 	"os"
 	"path"
@@ -101,7 +100,6 @@ func SyncJsonFile() error {
 			return err
 		}
 
-		cfg.Log.Info("json file reload")
 		return nil
 	}
 	var ossSwitch = cfg.Val(func(cfg *cfg.AppCfg) any {
@@ -126,10 +124,7 @@ func SyncJsonFile() error {
 			fileNum = 0
 			<-time.After(time.Millisecond * 100)
 		}
-		var val, err01 = downloadFile(ossPrefix+fileName, cfg.JsonFilePath)
-		if err01 != nil {
-			cfg.Log.Error(fmt.Sprintf("同步配置文件失败: %s:", fileName), zap.Error(err))
-		}
+		var val, _ = downloadFile(ossPrefix+fileName, cfg.JsonFilePath)
 		if val {
 			reload = val
 		}
