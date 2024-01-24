@@ -77,6 +77,60 @@ func main() {
 			c.Next()
 		},
 		func(c *gin.Context) {
+			defer c.Next()
+			if !gin.IsDebugging() {
+				return
+			}
+			var types = []string{
+				binding.MIMEJSON,
+				binding.MIMEPlain,
+				binding.MIMEPOSTForm,
+				binding.MIMEMultipartPOSTForm,
+			}
+
+			var writeBool bool
+			for _, tName := range types {
+				if c.ContentType() == tName {
+					writeBool = true
+					break
+				}
+			}
+
+			if !writeBool {
+				return
+			}
+
+			var buffer = new(bytes.Buffer)
+			var body map[string]interface{}
+			defer func() {
+				zap.L().Debug("request",
+					zap.String("url", c.Request.URL.String()),
+					zap.String("method", c.Request.Method),
+					zap.Any("body", body),
+				)
+			}()
+			if c.Request.ContentLength == 0 {
+				return
+			}
+			if c.ContentType() == binding.MIMEMultipartPOSTForm {
+				body["field"] = "[文件]"
+				return
+			}
+
+			if _, err = buffer.ReadFrom(c.Request.Body); err != nil {
+				if errors.Is(err, io.EOF) {
+					body["body"] = "Empty Body"
+					return
+				}
+
+				body["error"] = fmt.Sprintf("Http Body Read Err: %+v", err)
+				return
+			}
+
+			_ = json.Unmarshal(buffer.Bytes(), &body)
+			c.Request.Body = io.NopCloser(buffer)
+		},
+		func(c *gin.Context) {
 			var startTime = time.Now()
 			c.Next()
 			var duration = time.Now().Sub(startTime)
