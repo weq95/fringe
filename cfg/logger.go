@@ -35,7 +35,8 @@ func NewLogger(level int8) *CustomLogger {
 
 	var log = &CustomLogger{filePath: filePath, level: level}
 	log.NewLogFile()
-
+	zap.ReplaceGlobals(log.StartLogger(log.TextFormat()))
+	
 	return log
 }
 
@@ -85,8 +86,6 @@ func (l *CustomLogger) NewLogFile() {
 		return
 	}
 
-	_ = zap.L().Sync()
-	_ = l.logFile.Close()
 	var filename = fmt.Sprintf("%s/%s.log", l.filePath, timeNow)
 	var file, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
@@ -94,12 +93,13 @@ func (l *CustomLogger) NewLogFile() {
 		return
 	}
 
+	_ = zap.L().Sync()
+	_ = l.logFile.Close()
 	l.currName = timeNow
 	l.logFile = file
 	gin.DefaultWriter = l
 	gin.DefaultErrorWriter = l
 
-	zap.ReplaceGlobals(l.StartLogger(l.TextFormat()))
 	go CleanLogFiles(l.filePath)
 }
 
@@ -135,10 +135,14 @@ func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 		EncodeTime:   zapcore.TimeEncoderOfLayout(time.Kitchen),
 	}
 
-	return map[string]zapcore.EncoderConfig{
+	var value = map[string]zapcore.EncoderConfig{
 		"file": fileCfg,
-		"std":  stdinCfg,
 	}
+	if l.LogLevel-1 < -1 {
+		value["std"] = stdinCfg
+	}
+
+	return value
 }
 
 func (l *CustomLogger) JsonFormat() map[string]zapcore.Encoder {
