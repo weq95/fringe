@@ -13,13 +13,13 @@ import (
 
 type Server struct {
 	mu          sync.Mutex
-	serverId    int
-	peerIds     []int
-	cm          *Raft
-	storage     Storage
-	rpcProxy    *RPCProxy
-	rpcServer   *rpc.Server
-	peerClients map[int]*rpc.Client
+	id          int                 //该机器编号
+	peerIds     []int               //集群中所有的节点
+	cm          *Raft               //集群选举算法
+	storage     Storage             //存储器
+	rpcProxy    *RPCProxy           //转发器
+	rpcServer   *rpc.Server         //服务器
+	peerClients map[int]*rpc.Client //多个客户端
 	listener    net.Listener
 	commitChan  chan<- CommitEntry
 	ready       <-chan any
@@ -29,7 +29,7 @@ type Server struct {
 
 func NewServer(sid int, peerIds []int, ready <-chan any, commitChan chan<- CommitEntry) *Server {
 	return &Server{
-		serverId:    sid,
+		id:          sid,
 		peerIds:     peerIds,
 		peerClients: make(map[int]*rpc.Client),
 		storage:     NewStorage(),
@@ -50,12 +50,14 @@ func (s *Server) Serve() {
 	_ = s.rpcServer.RegisterName("Raft", s.rpcProxy)
 
 	var err error
+
+	// 操作系统会选择一个可用的端口并将其分配给监听器
 	s.listener, err = net.Listen("tcp", ":0")
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	log.Printf("[%v] listening at %s", s.serverId, s.listener.Addr())
+	log.Printf("[%v] listening at %s", s.id, s.listener.Addr())
 	s.mu.Unlock()
 
 	go func() {
@@ -152,6 +154,7 @@ type RPCProxy struct {
 	rf *Raft
 }
 
+// RequestVote 通过 rpc 远程调用的
 func (r *RPCProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) == 0 {
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
@@ -172,6 +175,7 @@ func (r *RPCProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) er
 	return r.rf.RequestVote(args, reply)
 }
 
+// AppendEntries 通过 rpc 远程调用的
 func (r *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) == 0 {
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
