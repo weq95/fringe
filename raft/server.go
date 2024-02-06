@@ -64,7 +64,7 @@ func (s *Server) Serve() {
 		s.wg.Add(1)
 		defer s.wg.Done()
 
-		for true {
+		for {
 			var conn, err01 = s.listener.Accept()
 			if err01 != nil {
 				select {
@@ -155,6 +155,9 @@ type RPCProxy struct {
 }
 
 // RequestVote 通过 rpc 远程调用的
+// dice 是为模拟真实环境使用
+// 随机延迟（1-5 毫秒）
+// 随机丢包或延迟（10% 概率）
 func (r *RPCProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) == 0 {
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
@@ -176,6 +179,9 @@ func (r *RPCProxy) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) er
 }
 
 // AppendEntries 通过 rpc 远程调用的
+// dice 是为模拟真实环境使用
+// 随机延迟（1-5 毫秒）
+// 随机丢包或延迟（10% 概率）
 func (r *RPCProxy) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	if len(os.Getenv("RAFT_UNRELIABLE_RPC")) == 0 {
 		time.Sleep(time.Duration(1+rand.Intn(5)) * time.Millisecond)
