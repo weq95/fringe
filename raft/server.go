@@ -127,7 +127,7 @@ func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 	defer s.mu.Unlock()
 
 	if s.peerClients[peerId] == nil {
-		var c, err = rpc.DialHTTP(addr.Network(), addr.String())
+		var c, err = rpc.Dial(addr.Network(), addr.String())
 		if err != nil {
 			return err
 		}
