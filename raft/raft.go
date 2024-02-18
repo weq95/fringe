@@ -71,7 +71,7 @@ type Raft struct {
 	matchIndex         map[int]int //每台机器对应的已经复制的最后一个日志条目的索引
 }
 
-func NewConsensusModule(srv *Server) *Raft {
+func NewRaft(srv *Server) *Raft {
 	var cm = &Raft{
 		id:                 srv.id,
 		peerIds:            srv.peerIds,
@@ -263,7 +263,7 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		cm.electionResetEvent = time.Now()
 
 		if args.PrevLogIndex == -1 ||
-			// 如果 Follower 节点的日志长度不足（args.PrevLogIndex < len(cm.log)） 则会进行拒绝
+			// 如果 Follower 节点的日志长度不足（args.PrevLogIndex < len(raft.log)） 则会进行拒绝
 			(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm == cm.log[args.PrevLogIndex].Term) {
 			reply.Success = true
 

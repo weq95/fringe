@@ -15,7 +15,7 @@ type Server struct {
 	mu          sync.Mutex
 	id          int                 //该机器编号
 	peerIds     []int               //集群中所有的节点
-	cm          *Raft               //集群选举算法
+	raft        *Raft               //集群选举算法
 	storage     Storage             //存储器
 	rpcProxy    *RPCProxy           //转发器
 	rpcServer   *rpc.Server         //服务器
@@ -41,11 +41,11 @@ func NewServer(sid int, peerIds []int, ready <-chan any, commitChan chan<- Commi
 
 func (s *Server) Serve() {
 	s.mu.Lock()
-	s.cm = NewConsensusModule(s)
+	s.raft = NewRaft(s)
 
 	s.rpcServer = rpc.NewServer()
 	s.rpcProxy = &RPCProxy{
-		rf: s.cm,
+		rf: s.raft,
 	}
 	_ = s.rpcServer.RegisterName("Raft", s.rpcProxy)
 
@@ -97,7 +97,7 @@ func (s *Server) DisconnectAll() {
 }
 
 func (s *Server) Shutdown() {
-	s.cm.Stop()
+	s.raft.Stop()
 	close(s.quit)
 	_ = s.listener.Close()
 }
@@ -121,6 +121,7 @@ func (s *Server) GetListenAddr() net.Addr {
 	return s.listener.Addr()
 }
 
+// ConnectToPeer 加入集群
 func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -137,6 +138,7 @@ func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 
 }
 
+// DisconnectPeer 退出集群
 func (s *Server) DisconnectPeer(peerId int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
