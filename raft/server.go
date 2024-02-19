@@ -88,6 +88,9 @@ func (s *Server) DisconnectAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.cm.state = Dead
+	s.cm.dlog("%d 服务器中止服务", s.serverId)
+	
 	for i, client := range s.peerClients {
 		if client != nil {
 			_ = client.Close()
