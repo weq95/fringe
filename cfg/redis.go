@@ -2,7 +2,12 @@ package cfg
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	r2 "github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"time"
 )
 

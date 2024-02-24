@@ -93,7 +93,7 @@ func NewRaft(srv *Server) *Raft {
 
 	go func() {
 		// 开始睡眠，直到收到领导人选举信号， 进行选举倒计时
-		<-srv.ready
+		<-time.After(cm.electionTimeout())
 		cm.mu.Lock()
 		cm.electionResetEvent = time.Now()
 		cm.mu.Unlock()

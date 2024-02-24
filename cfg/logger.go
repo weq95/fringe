@@ -138,7 +138,7 @@ func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 	var value = map[string]zapcore.EncoderConfig{
 		"file": fileCfg,
 	}
-	if l.LogLevel-1 < -1 {
+	if l.level-1 < -1 {
 		value["std"] = stdinCfg
 	}
 

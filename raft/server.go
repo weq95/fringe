@@ -22,7 +22,6 @@ type Server struct {
 	peerClients map[int]*rpc.Client //多个客户端
 	listener    net.Listener
 	commitChan  chan<- CommitEntry
-	ready       <-chan any
 	quit        chan any
 	wg          sync.WaitGroup
 }
@@ -33,7 +32,6 @@ func NewServer(sid int, peerIds []int, ready <-chan any, commitChan chan<- Commi
 		peerIds:     peerIds,
 		peerClients: make(map[int]*rpc.Client),
 		storage:     NewStorage(),
-		ready:       ready,
 		commitChan:  commitChan,
 		quit:        make(chan any),
 	}

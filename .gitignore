@@ -1,5 +1,6 @@
 .idea/
 .vscode/
+.fleet/
 cfg.yaml
 *.exe
 logs/
