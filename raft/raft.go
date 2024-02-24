@@ -78,7 +78,7 @@ func NewRaft(srv *Server) *Raft {
 		server:             srv,
 		storage:            srv.storage,
 		commitChan:         srv.commitChan,
-		newCommitReadyChan: make(chan struct{}),
+		newCommitReadyChan: make(chan struct{}, 16),
 		triggerAEChan:      make(chan struct{}, 1),
 		state:              Follower,
 		votedFor:           -1,
@@ -441,6 +441,9 @@ func (cm *Raft) startElection() {
 			}
 		}(peerId)
 	}
+
+    // 运行另一个选举定时器，以防止本次选举不成功
+    go cm.runElectionTimer()
 }
 
 // 开始成为领导者
@@ -533,7 +536,7 @@ func (cm *Raft) leaderSendAEs() {
 			var reply AppendEntriesReply
 			var err = cm.server.Call(peerId, "Raft.AppendEntries", args, &reply)
 			if err != nil {
-				log.Fatal(err)
+				fmt.Println("rpc 请求错误： ", err)
 				return
 			}
 

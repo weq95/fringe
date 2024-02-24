@@ -86,6 +86,9 @@ func (s *Server) DisconnectAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.cm.state = Dead
+	s.cm.dlog("%d 服务器中止服务", s.serverId)
+	
 	for i, client := range s.peerClients {
 		if client != nil {
 			_ = client.Close()
@@ -125,7 +128,7 @@ func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 	defer s.mu.Unlock()
 
 	if s.peerClients[peerId] == nil {
-		var c, err = rpc.DialHTTP(addr.Network(), addr.String())
+		var c, err = rpc.Dial(addr.Network(), addr.String())
 		if err != nil {
 			return err
 		}
