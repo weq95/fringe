@@ -86,13 +86,13 @@ func (s *Server) DisconnectAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.cm.state = Dead
-	s.cm.dlog("%d 服务器中止服务", s.serverId)
-	
+	s.raft.state = Dead
+	s.raft.dlog("%d 服务器中止服务", s.id)
+
 	for i, client := range s.peerClients {
 		if client != nil {
 			_ = client.Close()
-			s.peerClients[i] = nil
+			delete(s.peerClients, i)
 		}
 	}
 }
@@ -105,14 +105,13 @@ func (s *Server) Shutdown() {
 
 func (s *Server) Call(id int, srvMethod string, args, reply interface{}) error {
 	s.mu.Lock()
-	var peer = s.peerClients[id]
+	var peer, ok = s.peerClients[id]
 	s.mu.Unlock()
-
-	if peer != nil {
-		return peer.Call(srvMethod, args, reply)
+	if !ok {
+		return nil
 	}
 
-	return fmt.Errorf("call client %d after is's closed", id)
+	return peer.Call(srvMethod, args, reply)
 }
 
 func (s *Server) GetListenAddr() net.Addr {
@@ -127,7 +126,7 @@ func (s *Server) ConnectToPeer(peerId int, addr net.Addr) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if s.peerClients[peerId] == nil {
+	if _, ok := s.peerClients[peerId]; !ok {
 		var c, err = rpc.Dial(addr.Network(), addr.String())
 		if err != nil {
 			return err
@@ -145,11 +144,11 @@ func (s *Server) DisconnectPeer(peerId int) error {
 	defer s.mu.Unlock()
 
 	var c, ok = s.peerClients[peerId]
-	if !ok || c == nil {
+	if !ok {
 		return nil
 	}
 
-	s.peerClients[peerId] = nil
+	delete(s.peerClients, peerId)
 	return c.Close()
 }
 

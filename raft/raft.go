@@ -40,9 +40,9 @@ const (
 type CommitEntry struct {
 	// 正在提交的客户端命令
 	Command interface{}
-	// 提交客户端命令的日志索引
+	// 已提交[commit]的日志索引
 	Index int
-	// 提交客户端名的 Raft 术语
+	// 提交客户端名的 Raft 术语，任期
 	Term int
 }
 
@@ -53,22 +53,22 @@ type LogEntry struct {
 
 type Raft struct {
 	mu                 sync.Mutex
-	id                 int // 服务器id
-	peerIds            []int
+	id                 int                // 服务器id
+	peerIds            []int              // 所有的服务器ID
 	server             *Server            // 是此服务器，负责发起RPC调用
 	storage            Storage            // 存储器
-	commitChan         chan<- CommitEntry //将报告已提交日志
-	newCommitReadyChan chan struct{}      //内部通知通道，用于提交新日志
-	triggerAEChan      chan struct{}      //内部通知通道，用于向关注着发送AE通知
-	currentTerm        int                //Raft集群当前领导者
-	votedFor           int                //投自己已赞成的服务器id
-	log                []LogEntry
-	commitIndex        int //所有节点都认可的日志index
-	applied            int //日志已经被应用到状态机的index，确保所有已提交的日志条目都被正确地应用到状态机
-	state              CmState
-	electionResetEvent time.Time   //选举重置时间
-	nextIndex          map[int]int //每台机器对应的commitIndex
-	matchIndex         map[int]int //每台机器对应的已经复制的最后一个日志条目的索引
+	commitChan         chan<- CommitEntry // 将报告已提交日志
+	newCommitReadyChan chan struct{}      // 内部通知通道，用于提交新日志
+	triggerAEChan      chan struct{}      // 内部通知通道，用于向关注着发送AE通知
+	currentTerm        int                // Raft集群当前任期
+	votedFor           int                // 领导者服务器id
+	log                []LogEntry         // 目前未实现日志清理逻辑
+	commitIndex        int                // 所有节点都认可的日志index
+	applied            int                // 等待同步到数据库的startIndex
+	state              CmState            // 服务状态
+	electionResetEvent time.Time          // 选举重置时间
+	nextIndex          map[int]int        // 追随者下次需要commitIndex数据索引
+	matchIndex         map[int]int        // 每台机器已提交的日志条目索引
 }
 
 func NewRaft(srv *Server) *Raft {
@@ -181,7 +181,7 @@ func (cm *Raft) lastLogIndexAndTerm() (int, int) {
 
 // 变更为追随者
 func (cm *Raft) becomeFollower(term int) {
-	cm.dlog("becomes Follower with term=%d; log=%v", term, cm.log)
+	cm.dlog("[%d]成为追随者 term=%d; log=%v", cm.id, term, cm.log)
 	cm.state = Follower
 	cm.currentTerm = term
 	cm.votedFor = -1
@@ -200,12 +200,12 @@ func (cm *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error
 		return nil
 	}
 	var lastLogIndex, lastLogTerm = cm.lastLogIndexAndTerm()
-	cm.dlog("RequestVote: %+v [currentTerm=%d, votedFor=%d, log index/term=(%d, %d)]",
+	cm.dlog("开始选举: %+v [cTeam=%d, vFor=%d, log index/term=(%d, %d)]",
 		args, cm.currentTerm, cm.votedFor, lastLogIndex, lastLogTerm)
 
 	if args.Term > cm.currentTerm {
 		// 变更位追随者
-		cm.dlog("... term out of date in RequestVote")
+		cm.dlog("... 主动降级为追随者 RequestVote")
 		cm.becomeFollower(args.Term)
 	}
 
@@ -222,7 +222,7 @@ func (cm *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) error
 	// 把自身这边的任期返回
 	reply.Term = cm.currentTerm
 	cm.persistToStorage()
-	cm.dlog(".. Request reply: %+v", reply)
+	cm.dlog(".. 选举结果 reply: %+v", reply)
 	return nil
 }
 
@@ -242,6 +242,7 @@ type AppendEntriesReply struct {
 	ConflictTerm  int  //正常情况下为再次选举的日志节点和任期
 }
 
+// AppendEntries 领导者给追随者同步日志条目接口
 func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply) error {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
@@ -251,19 +252,24 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	cm.dlog("AppendEntries: %+v", args)
 	if args.Term > cm.currentTerm {
-		cm.dlog("... term out of date in AppendEntries")
+		cm.dlog("... 任期太小，再次发起选举请求 AppendEntries")
 		cm.becomeFollower(args.Term)
 	}
 
 	if args.Term == cm.currentTerm {
 		// 是同一任期，并且不是追随者，主动降为追随者
 		if cm.state != Follower {
+			cm.dlog("... 不是追随者，再次发起选举请求 AppendEntries：%d", cm.id)
 			cm.becomeFollower(args.Term)
 		}
+
+		// 更新选举重置时间，选举定时器一直在检测这个过期时间
 		cm.electionResetEvent = time.Now()
 
+		// args.PrevLogIndex == -1 说明没有领导者，可以直接投赞成票
 		if args.PrevLogIndex == -1 ||
-			// 如果 Follower 节点的日志长度不足（args.PrevLogIndex < len(raft.log)） 则会进行拒绝
+			// 如果 Follower 节点的上一个日志长度不足（args.PrevLogIndex < len(raft.log)） 则会进行拒绝
+			// 并且保证上一届日志任期相同
 			(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm == cm.log[args.PrevLogIndex].Term) {
 			reply.Success = true
 
@@ -271,6 +277,7 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 			var newEntriesIndex = 0
 
 			for {
+				// 达到本地日志最大索引 或 提交日志读取完成
 				if logInsertIndex >= len(cm.log) || newEntriesIndex >= len(args.Entries) {
 					break
 				}
@@ -284,24 +291,24 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 				newEntriesIndex++
 			}
 
-			// follower(跟随者)和leader(领导者) 数据不一致的记录
-			// 出现不一致的原因：在这种情况下，follower 节点会将leader节点发送的日志条目添加到自己的日志中，并将自己节点任期更新到leader节点的任期
+			// follower(跟随者)和leader(领导者) 数据不一致的记录，日志少了，把少的日志添加到当前节点
+			// 出现不一致的原因：follower 节点会将leader节点发送的日志条目添加到自己的日志中，并将自己节点任期更新到leader节点的任期
 			// 1.leader节点的任期 > follower节点的任期
 			// 2.leader节点发送的日志条目包含follower节点尚未复制的已提交日志条目
 			if newEntriesIndex < len(args.Entries) {
-				cm.dlog("... inserting entries %v from index %d", args.Entries[newEntriesIndex:], logInsertIndex)
+				cm.dlog("... 添加日志：%+v entries %v from index %d", cm.log, args.Entries[newEntriesIndex:], logInsertIndex)
 
 				// 当 follower 节点收到 leader 节点发送的 AppendEntries RPC 时，如果发现任期不一致，则需要根据具体情况判断是否需要将 leader 节点发送的日志条目添加到自己的日志中。
 				// 如果 leader 节点的任期大于 follower 节点的任期，则 follower 节点需要将 leader 节点发送的所有日志条目添加到自己的日志中，即使任期不一致
 				cm.log = append(cm.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
-				cm.dlog("... log is now: %v", cm.log)
+				cm.dlog("... 最新日志数据： %+v", cm.log)
 			}
 
 			// 重置提交记录的index，发起日志同步信号
 			// 这里会把会把数据同步到 commitChan 中
 			if args.LeaderCommit > cm.commitIndex {
 				cm.commitIndex = min(args.LeaderCommit, len(cm.log)-1)
-				cm.dlog("... setting commitIndex=%d", cm.commitIndex)
+				cm.dlog("... 节点设置commit日志索引 commitIndex=%d", cm.commitIndex)
 				cm.newCommitReadyChan <- struct{}{}
 			}
 		} else {
@@ -317,7 +324,7 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 				reply.ConflictTerm = cm.log[args.PrevLogIndex].Term
 				var i int
 
-				//follower寻找冲突点的index
+				//follower寻找冲突点的index，就是任期不同的数据
 				for i = args.PrevLogIndex - 1; i >= 0; i-- {
 					if cm.log[i].Term != reply.ConflictTerm {
 						break
@@ -331,7 +338,7 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 
 	reply.Term = cm.currentTerm
 	cm.persistToStorage()
-	cm.dlog("AppendEntries reply: %+v", *reply)
+	cm.dlog("AppendEntries 请求结果 reply: %+v", *reply)
 	return nil
 }
 
@@ -361,14 +368,14 @@ func (cm *Raft) runElectionTimer() {
 		// 候选人和追随者
 		// 这里是自己被选为leader
 		if cm.state != Candidate && cm.state != Follower {
-			cm.dlog("in election timer state=%s, bailing out", cm.state)
+			cm.dlog("退选：state=%s, 即不会追随者也不是候选人", cm.state)
 			cm.mu.Unlock()
 			return
 		}
 
 		// 已经出结果了，终止选举流程
 		if termStarted != cm.currentTerm {
-			cm.dlog("in election timer term changed from %d to %d, bailing out",
+			cm.dlog("任期(term)已更新，主动退选： %d to %d",
 				termStarted, cm.currentTerm)
 			cm.mu.Unlock()
 			return
@@ -389,10 +396,10 @@ func (cm *Raft) runElectionTimer() {
 func (cm *Raft) startElection() {
 	cm.state = Candidate //成为候选人
 	cm.currentTerm += 1
-	var savedCurrentTerm = cm.currentTerm //当前任期
-	cm.electionResetEvent = time.Now()    //重置时间
-	cm.votedFor = cm.id                   //投票给自己
-	cm.dlog("becomes Candidate (currentTerm=%d); log=%v", savedCurrentTerm, cm.log)
+	var currentTerm = cm.currentTerm   //当前任期
+	cm.electionResetEvent = time.Now() //重置时间
+	cm.votedFor = cm.id                //投票给自己
+	cm.dlog("成为候选人 (currentTerm=%d); log=%+v", currentTerm, cm.log)
 
 	var votesReceived = 1
 	for _, peerId := range cm.peerIds {
@@ -401,13 +408,13 @@ func (cm *Raft) startElection() {
 			var savedLastIndex, savedLastLogTerm = cm.lastLogIndexAndTerm()
 			cm.mu.Unlock()
 			var args = RequestVoteArgs{
-				Term:         savedCurrentTerm,
+				Term:         currentTerm,
 				CandidateId:  cm.id,
 				LastLogIndex: savedLastIndex,
 				LastLogTerm:  savedLastLogTerm,
 			}
 
-			cm.dlog("sending RequestVote to %d: %+v", peerId, args)
+			cm.dlog("发起候选人请求： RequestVote to %d: %+v", peerId, args)
 			var reply RequestVoteReply
 			var err = cm.server.Call(peerId, "Raft.RequestVote", args, &reply)
 			if err != nil {
@@ -417,24 +424,24 @@ func (cm *Raft) startElection() {
 			cm.mu.Lock()
 			defer cm.mu.Unlock()
 
-			cm.dlog("received RequestVoteReply %+v", reply)
+			cm.dlog("其他人投票回复信息 RequestVoteReply： %+v", reply)
 			if cm.state != Candidate {
-				cm.dlog("while waiting for reply, state = %v", cm.state)
+				cm.dlog("本节点已不是候选人，主动退出选举流程, state = %v", cm.state)
 				return
 			}
 
 			// 别人任期大于自己，主动降级退选
-			if reply.Term > savedCurrentTerm {
-				cm.dlog("term out of date in RequestVoteReply")
+			if reply.Term > currentTerm {
+				cm.dlog("候选人任期已过期 RequestVoteReply")
 				cm.becomeFollower(reply.Term)
 				return
 			}
 
-			if reply.Term == savedCurrentTerm && reply.VoteGranted {
+			if reply.Term == currentTerm && reply.VoteGranted {
 				// 集群内一半以上投票赞成，则将自身升级为leader
 				votesReceived += 1
 				if votesReceived*2 > len(cm.peerIds)+1 {
-					cm.dlog("wins election with %d votes", votesReceived)
+					cm.dlog("[%d]当选为领导者，获得票数： %d", cm.id, votesReceived)
 					cm.startLeader()
 				}
 
@@ -442,8 +449,8 @@ func (cm *Raft) startElection() {
 		}(peerId)
 	}
 
-    // 运行另一个选举定时器，以防止本次选举不成功
-    go cm.runElectionTimer()
+	// 运行另一个选举定时器，以防止本次选举不成功
+	go cm.runElectionTimer()
 }
 
 // 开始成为领导者
@@ -457,7 +464,7 @@ func (cm *Raft) startLeader() {
 		cm.nextIndex[id] = len(cm.log)
 		cm.matchIndex[id] = -1
 	}
-	cm.dlog("becomes Leader; term=%d, nextIndex=%v, matchIndex=%v; log=%v",
+	cm.dlog("正式成为领导者：term=%d, nextIndex=%v, matchIndex=%v; log=%v",
 		cm.currentTerm, cm.nextIndex, cm.matchIndex, cm.log)
 
 	go func(heartbeat time.Duration) {
@@ -500,7 +507,7 @@ func (cm *Raft) startLeader() {
 	}(50 * time.Millisecond)
 }
 
-// 向所有等待着发送一轮AE并等待结果
+// 这个请求必然是领导者发起，向所有等待着发送一轮AE并等待结果
 func (cm *Raft) leaderSendAEs() {
 	cm.mu.Lock()
 	// 只能有leader发起
@@ -509,9 +516,10 @@ func (cm *Raft) leaderSendAEs() {
 		return
 	}
 
-	var savedCurrentTerm = cm.currentTerm
+	var currentTerm = cm.currentTerm
 	cm.mu.Unlock()
 
+	// 领导者向每个节点同步信息
 	for _, peerId := range cm.peerIds {
 		go func(peerId int) {
 			cm.mu.Lock()
@@ -522,9 +530,9 @@ func (cm *Raft) leaderSendAEs() {
 			if prevLogIndex >= 0 {
 				prevLogTerm = cm.log[prevLogIndex].Term
 			}
-			var entries = cm.log[ni:] //leader希望follower复制的下一个日志条目的索引
+			var entries = cm.log[ni:] //leader希望follower复制的下一个日志条目
 			var args = AppendEntriesArgs{
-				Term:         savedCurrentTerm,
+				Term:         currentTerm,
 				LeaderId:     cm.id,
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  prevLogTerm,
@@ -532,11 +540,11 @@ func (cm *Raft) leaderSendAEs() {
 				LeaderCommit: cm.commitIndex,
 			}
 			cm.mu.Unlock()
-			cm.dlog("sending AppendEntries to %v: ni=%d, args=%+v", peerId, ni, args)
+			cm.dlog("领导者同步日志条目： AppendEntries to %v: ni=%d, logLen=%d, args=%+v", peerId, ni, len(cm.log), args)
 			var reply AppendEntriesReply
 			var err = cm.server.Call(peerId, "Raft.AppendEntries", args, &reply)
 			if err != nil {
-				fmt.Println("rpc 请求错误： ", err)
+				fmt.Println("rpc 领导者请求错误： ", err)
 				return
 			}
 
@@ -544,13 +552,13 @@ func (cm *Raft) leaderSendAEs() {
 			defer cm.mu.Unlock()
 			// 当前节点任期 < 节点最新的任期，执行降级，本节点强制为跟随者
 			if reply.Term > cm.currentTerm {
-				cm.dlog("term out of date in heartbeat reply")
+				cm.dlog("领导者节点任期已过期")
 				cm.becomeFollower(reply.Term)
 				return
 			}
 
 			// 是领导者 && 最新term，否则进行日志同步
-			if !(cm.state == Leader && savedCurrentTerm == reply.Term) {
+			if !(cm.state == Leader && currentTerm == reply.Term) {
 				return
 			}
 
@@ -559,6 +567,7 @@ func (cm *Raft) leaderSendAEs() {
 				cm.matchIndex[peerId] = cm.nextIndex[peerId] - 1 //上一条日志的index
 
 				var savedCommitIndex = cm.commitIndex //旧的已提交的commitIndex
+				// 这里是为了优化程序，只检测最新的数据
 				for i := cm.commitIndex + 1; i < len(cm.log); i++ {
 					//倒叙搜索，如果任期相同
 					if cm.log[i].Term == cm.currentTerm {
@@ -576,13 +585,16 @@ func (cm *Raft) leaderSendAEs() {
 					}
 				}
 
-				cm.dlog("AppendEntries reply from %d success: nextIndex := %v, matchIndex := %v; commitIndex := %d",
+				cm.dlog("领导者 （可忽略的日志）AppendEntries reply from %d success: nextIndex := %v, matchIndex := %v; commitIndex := %d",
 					peerId, cm.nextIndex, cm.matchIndex, cm.commitIndex)
 				if cm.commitIndex != savedCommitIndex {
 					// 有新的数据需要同步给其他从服务器，leader -> follower
 					// 向追随者发送 AE 来通知追随者
-					cm.dlog("leader sets commitIndex = %d", cm.commitIndex)
+					cm.dlog("数据已被集群认可，领导者通知追随者更新 commitIndex = %d", cm.commitIndex)
 					cm.newCommitReadyChan <- struct{}{}
+
+					// 这里通知信号， 等待 100ms 通知其他服务器更新commitIndex
+					// 相当于重调 cm.leaderSendAEs() 避免了多次调用
 					cm.triggerAEChan <- struct{}{}
 				}
 
@@ -592,8 +604,7 @@ func (cm *Raft) leaderSendAEs() {
 			// follower拒绝了本次追加【AppendEntriesRPC】
 			// 1.可能是日志不一致
 			// 2.任期过时
-
-			// 拒绝后默认再次同步 ConflictIndex 之后的日志条目
+			// 拒绝后默认再次同步 ConflictIndex 之后的日志条目，同样领导者也会重新设置该机器的 cm.nextIndex[peerId]
 			cm.nextIndex[peerId] = reply.ConflictIndex
 			if reply.ConflictTerm >= 0 {
 				// follower节点在某个特定任期上存在冲突，leader在自己的日志中找到该任期对应的日志条目
@@ -606,11 +617,13 @@ func (cm *Raft) leaderSendAEs() {
 					}
 				}
 
+				// 修改追随者服务器认为合法的日志索引
+				// 这里的matchIndex未被更新
 				if lastIndexOfTerm >= 0 {
 					cm.nextIndex[peerId] = lastIndexOfTerm + 1
 				}
 			}
-			cm.dlog("AppendEntries reply from %d !success: nextIndex := %d", peerId, ni-1)
+			cm.dlog("追随者拒绝领导者本次同步请求 AppendEntries reply from %d: nextIndex=%d", peerId, ni-1)
 		}(peerId)
 	}
 }
@@ -633,7 +646,10 @@ func (cm *Raft) commitChanSender() {
 		cm.dlog("commitChanSender entries=%v, savedApplied=%d", entries, savedApplied)
 
 		for i, entry := range entries {
-			cm.commitChan <- CommitEntry{
+
+			// 数据在这里进行持久化操作，目前并未正常处理，所以先注释
+			// cm.commitChan <- CommitEntry{}
+			_ = CommitEntry{
 				Command: entry.Command,
 				Index:   savedApplied + i + 1,
 				Term:    savedTerm,
