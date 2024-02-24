@@ -259,83 +259,86 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		cm.becomeFollower(args.Term)
 	}
 
-	if args.Term == cm.currentTerm {
-		// 更新选举重置时间，选举定时器一直在检测这个过期时间
-		cm.electionResetEvent = time.Now()
-
-		// args.PrevLogIndex == -1 说明没有领导者，可以直接投赞成票
-		if args.PrevLogIndex == -1 ||
-			// 如果 Follower 节点的上一个日志长度不足（args.PrevLogIndex < len(raft.log)） 则会进行拒绝
-			// 并且保证上一届日志任期相同
-			(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm == cm.log[args.PrevLogIndex].Term) {
-			reply.Success = true
-
-			var logInsertIndex = args.PrevLogIndex + 1 //这里保证了，返回的日志条目一定是从下一笔开始
-			var newEntriesIndex = 0
-
-			for {
-				// 达到本地日志最大索引 或 提交日志读取完成
-				if logInsertIndex >= len(cm.log) || newEntriesIndex >= len(args.Entries) {
-					break
-				}
-
-				// 任期不一致，终止插入的索引
-				if cm.log[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
-					break
-				}
-
-				logInsertIndex++
-				newEntriesIndex++
-			}
-
-			// follower(跟随者)和leader(领导者) 数据不一致的记录，日志少了，把少的日志添加到当前节点
-			// 出现不一致的原因：follower 节点会将leader节点发送的日志条目添加到自己的日志中，并将自己节点任期更新到leader节点的任期
-			// 1.leader节点的任期 > follower节点的任期
-			// 2.leader节点发送的日志条目包含follower节点尚未复制的已提交日志条目
-			if newEntriesIndex < len(args.Entries) {
-				cm.dlog("... 添加日志：%+v entries %v from index %d", cm.log, args.Entries[newEntriesIndex:], logInsertIndex)
-
-				// 当 follower 节点收到 leader 节点发送的 AppendEntries RPC 时，如果发现任期不一致，则需要根据具体情况判断是否需要将 leader 节点发送的日志条目添加到自己的日志中。
-				// 如果 leader 节点的任期大于 follower 节点的任期，则 follower 节点需要将 leader 节点发送的所有日志条目添加到自己的日志中，即使任期不一致
-				cm.log = append(cm.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
-				cm.dlog("... 最新日志数据： %+v", cm.log)
-			}
-
-			// 重置提交记录的index，发起日志同步信号
-			// 这里会把会把数据同步到 commitChan 中
-			if args.LeaderCommit > cm.commitIndex {
-				cm.commitIndex = min(args.LeaderCommit, len(cm.log)-1)
-				cm.dlog("... 节点设置commit日志索引 commitIndex=%d", cm.commitIndex)
-				cm.newCommitReadyChan <- struct{}{}
-			}
-		} else {
-			//follower 拒绝了 leader本次的请求
-			//reply.ConflictIndex
-			//reply.ConflictTerm
-			//这里是为帮助leader快速找到冲突而存在的
-			if args.PrevLogIndex >= len(cm.log) {
-				// 回复自己的日志长度， 以便快速进入选举流程
-				reply.ConflictIndex = len(cm.log)
-				reply.ConflictTerm = -1
-			} else {
-				reply.ConflictTerm = cm.log[args.PrevLogIndex].Term
-				var i int
-
-				//follower寻找冲突点的index，就是任期不同的数据
-				for i = args.PrevLogIndex - 1; i >= 0; i-- {
-					if cm.log[i].Term != reply.ConflictTerm {
-						break
-					}
-				}
-
-				reply.ConflictIndex = i + 1
-			}
-		}
+	reply.Term = cm.currentTerm
+	defer cm.persistToStorage()
+	if !legal {
+		return nil
 	}
 
-	reply.Term = cm.currentTerm
-	cm.persistToStorage()
-	cm.dlog("AppendEntries 请求结果 reply: %+v", *reply)
+	// 更新选举重置时间，选举定时器一直在检测这个过期时间
+	cm.electionResetEvent = time.Now()
+
+	// args.PrevLogIndex == -1 说明没有数据
+	if args.PrevLogIndex == -1 ||
+		// 如果 Follower 节点的上一个日志长度不足（args.PrevLogIndex < len(raft.log)） 则会进行拒绝
+		// 并且保证上一届日志任期相同
+		(args.PrevLogIndex < len(cm.log) && args.PrevLogTerm == cm.log[args.PrevLogIndex].Term) {
+		reply.Success = true
+
+		var logInsertIndex = args.PrevLogIndex + 1 //这里保证了，返回的日志条目一定是从下一笔开始
+		var newEntriesIndex = 0
+
+		for {
+			// 达到本地日志最大索引 或 提交日志读取完成
+			if logInsertIndex >= len(cm.log) || newEntriesIndex >= len(args.Entries) {
+				break
+			}
+
+			// 任期不一致，终止插入的索引
+			if cm.log[logInsertIndex].Term != args.Entries[newEntriesIndex].Term {
+				break
+			}
+
+			logInsertIndex++
+			newEntriesIndex++
+		}
+
+		// follower(跟随者)和leader(领导者) 数据不一致的记录，日志少了，把少的日志添加到当前节点
+		// 出现不一致的原因：follower 节点会将leader节点发送的日志条目添加到自己的日志中，并将自己节点任期更新到leader节点的任期
+		// 1.leader节点的任期 > follower节点的任期
+		// 2.leader节点发送的日志条目包含follower节点尚未复制的已提交日志条目
+		if newEntriesIndex < len(args.Entries) {
+			cm.dlog("... 添加日志：%+v entries %v from index %d", cm.log, args.Entries[newEntriesIndex:], logInsertIndex)
+
+			// 当 follower 节点收到 leader 节点发送的 AppendEntries RPC 时，如果发现任期不一致，则需要根据具体情况判断是否需要将 leader 节点发送的日志条目添加到自己的日志中。
+			// 如果 leader 节点的任期大于 follower 节点的任期，则 follower 节点需要将 leader 节点发送的所有日志条目添加到自己的日志中，即使任期不一致
+			cm.log = append(cm.log[:logInsertIndex], args.Entries[newEntriesIndex:]...)
+			cm.dlog("... 最新日志数据： %+v", cm.log)
+		}
+
+		// 重置提交记录的index，发起日志同步信号
+		// 这里会把会把数据同步到 commitChan 中
+		if args.LeaderCommit > cm.commitIndex {
+			cm.commitIndex = min(args.LeaderCommit, len(cm.log)-1)
+			cm.dlog("... 节点设置commit日志索引 commitIndex=%d", cm.commitIndex)
+			cm.newCommitReadyChan <- struct{}{}
+		}
+
+		return nil
+	}
+
+	//follower 拒绝了 leader本次的请求
+	//reply.ConflictIndex
+	//reply.ConflictTerm
+	//这里是为帮助leader快速找到冲突而存在的
+	if args.PrevLogIndex >= len(cm.log) {
+		// 回复自己的日志长度， 以便快速进入选举流程
+		reply.ConflictIndex = len(cm.log)
+		reply.ConflictTerm = -1
+	} else {
+		reply.ConflictTerm = cm.log[args.PrevLogIndex].Term
+		var i int
+
+		//follower寻找冲突点的index，就是任期不同的数据
+		for i = args.PrevLogIndex - 1; i >= 0; i-- {
+			if cm.log[i].Term != reply.ConflictTerm {
+				break
+			}
+		}
+
+		reply.ConflictIndex = i + 1
+	}
+
 	return nil
 }
 
