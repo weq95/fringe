@@ -251,18 +251,15 @@ func (cm *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	}
 
 	cm.dlog("AppendEntries: %+v", args)
-	if args.Term > cm.currentTerm {
-		cm.dlog("... 任期太小，再次发起选举请求 AppendEntries")
+	var legal = args.Term == cm.currentTerm
+	// 任期不一致，发起选举
+	// 是同一任期，并且不是追随者，发起选举
+	if args.Term > cm.currentTerm || (legal && cm.state != Follower) {
+		cm.dlog("... 任期太小(%d) || 不是追随者(%s)，再次发起选举请求 AppendEntries", cm.currentTerm, cm.state.String())
 		cm.becomeFollower(args.Term)
 	}
 
 	if args.Term == cm.currentTerm {
-		// 是同一任期，并且不是追随者，主动降为追随者
-		if cm.state != Follower {
-			cm.dlog("... 不是追随者，再次发起选举请求 AppendEntries：%d", cm.id)
-			cm.becomeFollower(args.Term)
-		}
-
 		// 更新选举重置时间，选举定时器一直在检测这个过期时间
 		cm.electionResetEvent = time.Now()
 
