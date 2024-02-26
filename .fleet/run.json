@@ -1,0 +1,25 @@
+{
+    "configurations": [
+        {
+            "name": "center",
+            "type": "go",
+            "workingDir": "C:\\workspace\\fringe",
+            "goExecPath": "C:\\Application\\GoSystem\\bin\\go.exe",
+            "buildParams": [
+                "$PROJECT_DIR$/center/main.go"
+            ]
+        },
+        {
+            "name": "im",
+            "type": "go",
+            "workingDir": "C:\\workspace\\fringe",
+            "goExecPath": "C:\\Application\\GoSystem\\bin\\go.exe",
+            "buildParams": [
+                "$PROJECT_DIR$/im/main.go"
+            ],
+            "dependsOn": [
+                "center"
+            ],
+        }
+    ]
+}
