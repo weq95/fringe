@@ -145,7 +145,7 @@ func main() {
 			}
 		},
 		gin.CustomRecoveryWithWriter(gin.DefaultErrorWriter, func(c *gin.Context, err any) {
-			if err != nil {
+			if err == nil {
 				return
 			}
 
