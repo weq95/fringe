@@ -3,12 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"fringe/center/business"
 	"fringe/center/router"
 	"fringe/cfg"
-	"fringe/middleware"
 	"fringe/netsrv"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -91,13 +91,15 @@ func main() {
 				binding.MIMEMultipartPOSTForm: {},
 			}
 
-			var body = "Empty Body"
+			var body = map[string]any{
+				"content": "empty body",
+			}
 			defer func() {
 				zap.L().Debug("request",
-					zap.String("url", c.Request.URL.String()),
+					zap.String("url-query", c.Request.URL.String()),
 					zap.String("method", c.Request.Method),
-					zap.String("content-Type", c.ContentType()),
-					zap.String("body", body),
+					zap.String("content-type", c.ContentType()),
+					zap.Any("body", body),
 				)
 			}()
 			if _, ok := types[c.ContentType()]; !ok {
@@ -107,7 +109,7 @@ func main() {
 				return
 			}
 			if c.ContentType() == binding.MIMEMultipartPOSTForm {
-				body = "[文件]"
+				body["name"] = "[文件]"
 				return
 			}
 
@@ -117,11 +119,11 @@ func main() {
 					return
 				}
 
-				body = fmt.Sprintf("Http Body Read Err: %+v", err)
+				body["error"] = fmt.Sprintf("Http Body Read Err: %+v", err)
 				return
 			}
 
-			body = buffer.String()
+			_ = json.Unmarshal(buffer.Bytes(), &body)
 			c.Request.Body = io.NopCloser(buffer)
 		},
 		func(c *gin.Context) {
@@ -144,8 +146,7 @@ func main() {
 			c.JSON(http.StatusOK, gin.H{"code": http.StatusInternalServerError, "message": "server error"})
 		}),
 	)
-	r.POST("/login", business.Login)
-	r.Use(middleware.LoginMiddleware())
+	r.POST("/api/login", business.Login)
 
 	var srv = &http.Server{
 		Addr:    port,
