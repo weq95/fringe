@@ -64,12 +64,12 @@ func main() {
 			origin := c.Request.Header.Get("Origin")
 			if origin != "" {
 				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-				c.Header("Access-Control-Allow-Methods", "POST, GET, OPTIONS, PUT, DELETE,UPDATE")
-				c.Header("Access-Control-Allow-Headers", "Authorization, content-type, Content-Length, X-CSRF-Token, Token,session,Access-Control-Allow-Headers,account")
-				c.Header("Access-Control-Expose-Headers", "Content-Length, Access-Control-Allow-Origin, Access-Control-Allow-Headers")
-				c.Header("Access-Control-Max-Age", "172800")
-				c.Header("Access-Control-Allow-Credentials", "true")
-				c.Set("Content-Type", "application/json")
+				c.Writer.Header().Set("Access-Control-Allow-Methods", "POST,GET,OPTIONS,PUT,DELETE,UPDATE")
+				c.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization,content-type,Content-Length,X-CSRF-Token,Token,session,Access-Control-Allow-Headers,account")
+				c.Writer.Header().Set("Access-Control-Expose-Headers", "Content-Length,Access-Control-Allow-Origin,Access-Control-Allow-Headers")
+				c.Writer.Header().Set("Access-Control-Max-Age", "172800")
+				c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+				c.Writer.Header().Set("Content-Type", "application/json")
 			}
 
 			if method == "OPTIONS" {
@@ -84,34 +84,25 @@ func main() {
 			if !gin.IsDebugging() {
 				return
 			}
-			var types = []string{
-				binding.MIMEJSON,
-				binding.MIMEPlain,
-				binding.MIMEPOSTForm,
-				binding.MIMEMultipartPOSTForm,
+			var types = map[string]struct{}{
+				binding.MIMEJSON:              {},
+				binding.MIMEPlain:             {},
+				binding.MIMEPOSTForm:          {},
+				binding.MIMEMultipartPOSTForm: {},
 			}
 
-			var writeBool bool
-			for _, tName := range types {
-				if c.ContentType() == tName {
-					writeBool = true
-					break
-				}
-			}
-
-			if !writeBool {
-				return
-			}
-
-			var buffer = new(bytes.Buffer)
-			var body string
+			var body = "Empty Body"
 			defer func() {
 				zap.L().Debug("request",
 					zap.String("url", c.Request.URL.String()),
 					zap.String("method", c.Request.Method),
+					zap.String("content-Type", c.ContentType()),
 					zap.String("body", body),
 				)
 			}()
+			if _, ok := types[c.ContentType()]; !ok {
+				return
+			}
 			if c.Request.ContentLength == 0 {
 				return
 			}
@@ -120,9 +111,9 @@ func main() {
 				return
 			}
 
+			var buffer = new(bytes.Buffer)
 			if _, err = buffer.ReadFrom(c.Request.Body); err != nil {
 				if errors.Is(err, io.EOF) {
-					body = "Empty Body"
 					return
 				}
 
