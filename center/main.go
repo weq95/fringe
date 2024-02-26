@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"fringe/center/business"
@@ -105,33 +104,33 @@ func main() {
 			}
 
 			var buffer = new(bytes.Buffer)
-			var body map[string]interface{}
+			var body string
 			defer func() {
 				zap.L().Debug("request",
 					zap.String("url", c.Request.URL.String()),
 					zap.String("method", c.Request.Method),
-					zap.Any("body", body),
+					zap.String("body", body),
 				)
 			}()
 			if c.Request.ContentLength == 0 {
 				return
 			}
 			if c.ContentType() == binding.MIMEMultipartPOSTForm {
-				body["field"] = "[文件]"
+				body = "[文件]"
 				return
 			}
 
 			if _, err = buffer.ReadFrom(c.Request.Body); err != nil {
 				if errors.Is(err, io.EOF) {
-					body["body"] = "Empty Body"
+					body = "Empty Body"
 					return
 				}
 
-				body["error"] = fmt.Sprintf("Http Body Read Err: %+v", err)
+				body = fmt.Sprintf("Http Body Read Err: %+v", err)
 				return
 			}
 
-			_ = json.Unmarshal(buffer.Bytes(), &body)
+			body = buffer.String()
 			c.Request.Body = io.NopCloser(buffer)
 		},
 		func(c *gin.Context) {
@@ -149,7 +148,7 @@ func main() {
 			if err != nil {
 				return
 			}
-			
+
 			c.Abort()
 			c.JSON(http.StatusOK, gin.H{"code": http.StatusInternalServerError, "message": "server error"})
 		}),
