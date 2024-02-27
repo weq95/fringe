@@ -2,18 +2,23 @@
 
 branch=master
 appName=wallet
+cd /opt/
 if [ ! -d "/opt/seamless_wallet/" ]; then
-     git clone git@ip:demo/seamless_wallet.git
+     git clone git@44.208.10.174:brl/seamless_wallet.git
 fi
 cd /opt/seamless_wallet/
 git reset --hard origin/${branch}
 git pull
 echo -e "拉取最新代码成功"
-go build -o ../wallet
+
+rm -f /opt/wallet
+ 
+go build -a -o ../wallet
+
 echo -e "项目 [wallet] 编译成功"
 
 # 应用程序数组
-apps=("wallet8081" "wallet8082")
+apps=("wallet8083" "wallet8084")
 
 # 循环处理每个服务
 for service in "${apps[@]}"; do
@@ -26,6 +31,8 @@ for service in "${apps[@]}"; do
             ps -aux | grep $service | grep -v grep | awk '{print $2}' | xargs kill
             sleep 1
         else
+            rm -f /opt/$portDir/$service
+            echo -e $(ls /opt/$portDir/ -a)
             echo -e "$service 进程已经终止, $service 停止服务"
             break
         fi
@@ -44,13 +51,16 @@ for service in "${apps[@]}"; do
     chmod 755 "/opt/$portDir/$service"
     echo -e "$service 最新启动包复制成功"
 
+    ((i++))
+    index=$i
+
     while true; do
         processNum=$(ps -ef | grep $service | grep -v grep | wc -l)
         if [ $processNum -eq 0 ]; then
            echo -e "/opt/$portDir/$service > /dev/null 2>&1 &"
            # shellcheck disable=SC2164
            cd "/opt/$portDir/"
-           nohup ./$service > /dev/null 2>&1 &
+           nohup ./$service $index > /dev/null 2>&1 &
            echo -e "command executed successfully."
            sleep 1
         else
@@ -66,5 +76,6 @@ for service in "${apps[@]}"; do
     done
 done
 serviceInfo=$(ps -ef | grep "$appName" | grep -v grep)
+rm -rf /opt/seamless_wallet
 echo -e "\r\r------------------> 服务已全部启动 <------------------"
 echo -e "service-info[$appName]: \r\r$serviceInfo\r\r"
