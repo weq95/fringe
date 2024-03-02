@@ -66,7 +66,7 @@ func (m MyHandler) StartApp() {
 		println(err)
 	}
 
-	log.Printf("listener: %v\n", listener)
+	log.Printf("listener: %v\n", listener.Addr().String())
 	go func() {
 		// 不能阻塞主线程
 		if err := server.Serve(listener); err != nil {
