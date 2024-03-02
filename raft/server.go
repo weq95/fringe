@@ -26,7 +26,7 @@ type Server struct {
 	wg          sync.WaitGroup
 }
 
-func NewServer(sid int, peerIds []int, ready <-chan any, commitChan chan<- CommitEntry) *Server {
+func NewServer(sid int, peerIds []int, commitChan chan<- CommitEntry) *Server {
 	return &Server{
 		id:          sid,
 		peerIds:     peerIds,

@@ -3,6 +3,7 @@ module fringe
 go 1.21.4
 
 require (
+	github.com/fortytw2/leaktest v1.3.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/go-playground/validator/v10 v10.17.0
 	github.com/go-sql-driver/mysql v1.7.0
