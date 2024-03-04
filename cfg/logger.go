@@ -13,10 +13,11 @@ import (
 )
 
 type CustomLogger struct {
-	filePath string
-	currName string
-	logFile  *os.File
-	level    int8
+	filePath   string
+	currName   string
+	logFile    *os.File
+	errLogFile *os.File
+	level      int8
 }
 
 func (l *CustomLogger) Printf(_ string, i ...interface{}) {
@@ -36,7 +37,7 @@ func NewLogger(level int8) *CustomLogger {
 	var log = &CustomLogger{filePath: filePath, level: level}
 	log.NewLogFile()
 	zap.ReplaceGlobals(log.StartLogger(log.TextFormat()))
-	
+
 	return log
 }
 
@@ -52,7 +53,6 @@ func CleanLogFiles(directory string) error {
 	}
 	var timeAgo = time.Now().AddDate(0, 0, -3)
 	var files, err = os.ReadDir(directory)
-	zap.L().Warn(fmt.Sprintf("清理目录文件：%s", directory))
 	if err != nil {
 		return err
 	}
@@ -72,7 +72,7 @@ func CleanLogFiles(directory string) error {
 		}
 		if info.ModTime().Before(timeAgo) {
 			if err = os.Remove(directory + "/" + file.Name()); err != nil {
-				zap.L().Error(fmt.Sprintf("删除文件失败：%s，错误：%+v", file.Name(), err))
+				fmt.Println(fmt.Sprintf("删除文件失败：%s，错误：%+v", file.Name(), err))
 			}
 		}
 	}
@@ -87,7 +87,16 @@ func (l *CustomLogger) NewLogFile() {
 	}
 
 	var filename = fmt.Sprintf("%s/%s.log", l.filePath, timeNow)
-	var file, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	var file *os.File
+	var errFile *os.File
+	var err error
+	file, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	if err != nil {
+		fmt.Printf("创建日志文件失败： %+v", err)
+		return
+	}
+
+	errFile, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 	if err != nil {
 		fmt.Printf("创建日志文件失败： %+v", err)
 		return
@@ -95,10 +104,12 @@ func (l *CustomLogger) NewLogFile() {
 
 	_ = zap.L().Sync()
 	_ = l.logFile.Close()
+	_ = l.errLogFile.Close()
 	l.currName = timeNow
 	l.logFile = file
-	gin.DefaultWriter = l
-	gin.DefaultErrorWriter = l
+	l.errLogFile = errFile
+	gin.DefaultWriter = l.logFile
+	gin.DefaultErrorWriter = l.errLogFile
 
 	go CleanLogFiles(l.filePath)
 }
@@ -106,7 +117,7 @@ func (l *CustomLogger) NewLogFile() {
 func (l CustomLogger) Write(p []byte) (n int, err error) {
 	l.NewLogFile()
 
-	return l.logFile.Write(p)
+	return len(p), nil
 }
 
 func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
@@ -181,10 +192,18 @@ func (l *CustomLogger) StartLogger(config map[string]zapcore.Encoder) *zap.Logge
 		switch key {
 		case "file":
 			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(l.logFile), level))
+			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(l.errLogFile), zapcore.ErrorLevel))
 		case "std":
 			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(zapcore.AddSync(os.Stdout)), level))
 		}
 	}
 
 	return zap.New(zapcore.NewTee(cores...), zap.AddCaller(), zap.AddStacktrace(zap.ErrorLevel))
+}
+
+// CloseFile 关闭文件句柄
+func (l *CustomLogger) CloseFile() {
+	_ = zap.L().Sync()
+	_ = l.logFile.Close()
+	_ = l.errLogFile.Close()
 }
