@@ -16,7 +16,7 @@ import (
 
 var (
 	listener net.Listener
-	err      error
+	hit_err  error
 	server   http.Server
 	graceful = flag.Bool("g", false, "listen on fd open 3 (internal use only)")
 )
@@ -38,10 +38,10 @@ func (m MyHandler) StartApp() {
 	fmt.Println("start-up at ", time.Now(), *graceful)
 	if *graceful {
 		var fd = os.NewFile(3, "")
-		listener, err = net.FileListener(fd)
+		listener, hit_err = net.FileListener(fd)
 		fmt.Printf("graceful-reborn %v %v %#v \n", fd.Fd(), fd.Name(), listener)
 	} else {
-		listener, err = net.Listen("tcp", ":8080")
+		listener, hit_err = net.Listen("tcp", ":8080")
 		var tcp, ok = listener.(*net.TCPListener)
 		if !ok {
 			fmt.Println("listener.(*net.TCPListener) error", ok)
@@ -62,8 +62,8 @@ func (m MyHandler) StartApp() {
 	}
 
 	log.Printf("Actual pid is %d\n", syscall.Getpid())
-	if err != nil {
-		println(err)
+	if hit_err != nil {
+		println(hit_err)
 	}
 
 	log.Printf("listener: %v\n", listener.Addr().String())

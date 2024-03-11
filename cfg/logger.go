@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/zapcore"
 	"os"
 	"path"
@@ -17,7 +18,31 @@ type CustomLogger struct {
 	currName   string
 	logFile    *os.File
 	errLogFile *os.File
-	level      int8
+	level      zapcore.Level
+	zapcore.Encoder
+}
+
+func (l *CustomLogger) With(fields []zapcore.Field) zapcore.Core {
+	var clone = &CustomLogger{
+		filePath:   l.filePath,
+		currName:   l.currName,
+		logFile:    l.logFile,
+		errLogFile: l.errLogFile,
+		level:      l.level,
+		Encoder:    l.Encoder,
+	}
+	for i := range fields {
+		fields[i].AddTo(clone.Encoder)
+	}
+
+	return clone
+}
+
+func (l *CustomLogger) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if l.Enabled(ent.Level) {
+		return ce.AddCore(ent, l)
+	}
+	return ce
 }
 
 func (l *CustomLogger) Printf(_ string, i ...interface{}) {
@@ -34,9 +59,9 @@ func NewLogger(level int8) *CustomLogger {
 	var filePath = fmt.Sprintf("%s/logs/%s/", dir, file)
 	_ = os.MkdirAll(filePath, os.ModePerm)
 
-	var log = &CustomLogger{filePath: filePath, level: level}
-	log.NewLogFile()
-	zap.ReplaceGlobals(log.StartLogger(log.TextFormat()))
+	var log = &CustomLogger{filePath: filePath, level: zapcore.Level(level)}
+	log.NewLogFile(true)
+	zap.ReplaceGlobals(log.StartLogger(log.JsonFormat()))
 
 	return log
 }
@@ -80,44 +105,70 @@ func CleanLogFiles(directory string) error {
 	return err
 }
 
-func (l *CustomLogger) NewLogFile() {
+func (l *CustomLogger) NewLogFile(startApp bool) {
 	var timeNow = time.Now().Format(time.DateOnly)
 	if l.currName == timeNow {
 		return
 	}
 
-	var filename = fmt.Sprintf("%s/%s.log", l.filePath, timeNow)
-	var file *os.File
-	var errFile *os.File
-	var err error
-	file, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	var filesCreateFn = func(filepath, ymd string) ([]*os.File, error) {
+		var flag = os.O_APPEND | os.O_CREATE | os.O_WRONLY
+		var f1, e1 = os.OpenFile(fmt.Sprintf("%s%s.log", filepath, ymd), flag, 0666)
+		if e1 != nil {
+			return nil, e1
+		}
+		var f2, e2 = os.OpenFile(fmt.Sprintf("%s%s_err.log", filepath, ymd), flag, 0666)
+		if e2 != nil {
+			_ = f1.Close()
+			return nil, e2
+		}
+
+		return []*os.File{f1, f2}, nil
+	}
+
+	var logFiles, err = filesCreateFn(l.filePath, timeNow)
 	if err != nil {
-		fmt.Printf("创建日志文件失败： %+v", err)
+		zap.L().Error(err.Error())
 		return
 	}
 
-	errFile, err = os.OpenFile(filename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
-	if err != nil {
-		fmt.Printf("创建日志文件失败： %+v", err)
-		return
+	if !startApp {
+		l.CloseFile()
 	}
-
-	_ = zap.L().Sync()
-	_ = l.logFile.Close()
-	_ = l.errLogFile.Close()
 	l.currName = timeNow
-	l.logFile = file
-	l.errLogFile = errFile
+	l.logFile = logFiles[0]
+	l.errLogFile = logFiles[1]
 	gin.DefaultWriter = l.logFile
 	gin.DefaultErrorWriter = l.errLogFile
 
 	go CleanLogFiles(l.filePath)
 }
 
-func (l CustomLogger) Write(p []byte) (n int, err error) {
-	l.NewLogFile()
+func (l *CustomLogger) Write(ent zapcore.Entry, fields []zapcore.Field) error {
+	l.NewLogFile(false)
 
-	return len(p), nil
+	var buff *buffer.Buffer
+	if buff, hit_err = l.EncodeEntry(ent, fields); hit_err != nil {
+		return hit_err
+	}
+	_, hit_err = l.logFile.Write(buff.Bytes())
+	defer buff.Free()
+	if hit_err != nil {
+		return hit_err
+	}
+	if ent.Level >= zapcore.ErrorLevel {
+		_ = l.Sync()
+		_, hit_err = l.errLogFile.Write(buff.Bytes())
+	}
+	return hit_err
+}
+
+func (l CustomLogger) Sync() error {
+	return nil
+}
+
+func (l CustomLogger) Enabled(level zapcore.Level) bool {
+	return l.level <= level
 }
 
 func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
@@ -184,17 +235,14 @@ func (l *CustomLogger) TextFormat() map[string]zapcore.Encoder {
 
 func (l *CustomLogger) StartLogger(config map[string]zapcore.Encoder) *zap.Logger {
 	var cores = make([]zapcore.Core, 0, len(config))
-	var level = Val(func(cfg *AppCfg) any {
-		return zapcore.Level(cfg.LogLevel)
-	}).(zapcore.Level)
 
 	for key, encoder := range config {
 		switch key {
 		case "file":
-			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(l.logFile), level))
-			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(l.errLogFile), zapcore.ErrorLevel))
+			l.Encoder = encoder
+			cores = append(cores, l)
 		case "std":
-			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(zapcore.AddSync(os.Stdout)), level))
+			cores = append(cores, zapcore.NewCore(encoder, zapcore.AddSync(os.Stdout), l.level))
 		}
 	}
 
