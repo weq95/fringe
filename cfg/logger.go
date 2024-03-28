@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+type GinLog struct {
+	*CustomLogger
+}
+
+func (g *GinLog) Write(b []byte) (int, error) {
+	g.NewLogFile(false)
+
+	return g.logFile.Write(b)
+}
+
 type CustomLogger struct {
 	filePath   string
 	currName   string
@@ -138,8 +148,10 @@ func (l *CustomLogger) NewLogFile(startApp bool) {
 	l.currName = timeNow
 	l.logFile = logFiles[0]
 	l.errLogFile = logFiles[1]
-	gin.DefaultWriter = l.logFile
-	gin.DefaultErrorWriter = l.errLogFile
+
+	var ginLog = &GinLog{l}
+	gin.DefaultWriter = ginLog
+	gin.DefaultErrorWriter = ginLog
 
 	go CleanLogFiles(l.filePath)
 }
