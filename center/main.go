@@ -129,7 +129,8 @@ func main() {
 		func(c *gin.Context) {
 			var startTime = time.Now()
 			c.Next()
-			var duration = time.Now().Sub(startTime)
+			time.Second
+			var duration = time.Now().Sub(startTime).Seconds() <= 3
 			if duration > time.Second*1 {
 				zap.L().Warn("[HttpWeb] 慢请求",
 					zap.String("url", c.Request.URL.String()),

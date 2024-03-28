@@ -42,7 +42,6 @@ func NewRedisClient() error {
 	return client.Ping(context.TODO()).Err()
 }
 
-
 // RedisTxFn 事务： 业务超时时间10秒
 func RedisTxFn(key string, fn func(ctx context.Context, tx r2.Pipeliner) (interface{}, error)) (interface{}, error) {
 	var redisClusterClient = GetRedis()
@@ -202,6 +201,65 @@ ForStop:
 		}
 	}(script)
 
+	var result any
+	if result, err = fn(ctx, tx); err != nil {
+		tx.Discard()
+		return nil, err
+	}
+
+	_, err = tx.Exec(ctx)
+	return result, err
+}
+
+func RedisTxFn002(key string, fn func(ctx context.Context, tx r2.Pipeliner) (interface{}, error)) (interface{}, error) {
+	var c = GetRedis()
+	var lt = time.Second * 10
+	var ctx, cancel = context.WithTimeout(context.Background(), lt)
+	defer cancel()
+	var err error
+	var lockVal int64
+
+	var lockKey = fmt.Sprintf("amotic_lock:%s", key)
+	// 用于通知等待的协程
+	var lockAcquired = make(chan struct{})
+
+	var tryAcquireLock = func() {
+		for {
+			lockVal, err = c.Eval(ctx, `
+                if redis.call("EXISTS", KEYS[1]) == 0 then
+                    redis.call("SET", KEYS[1], ARGV[1], "NX", "EX", tonumber(ARGV[2]))
+                    return 1
+                end
+                return 0`, []string{lockKey}, uuid.New().String(), lt.Seconds()).Int64()
+			if err != nil {
+				// 失败时通知所有等待者，避免无限等待
+				close(lockAcquired)
+				return
+			}
+			if lockVal > 0 {
+				close(lockAcquired) // 获得锁后通知等待者
+				return
+			}
+		}
+	}
+
+	go tryAcquireLock()
+
+	// 等待锁获取通知或超时
+	select {
+	case <-lockAcquired:
+	case <-ctx.Done():
+		return nil, errors.New("failed to acquire lock within timeout")
+	}
+
+	defer func() {
+		// 释放锁
+		if _, err = c.Del(ctx, lockKey).Result(); err != nil {
+			zap.L().Error(err.Error())
+		}
+	}()
+
+	var tx = c.TxPipeline()
 	var result any
 	if result, err = fn(ctx, tx); err != nil {
 		tx.Discard()
