@@ -291,12 +291,13 @@ func RequestLogger() gin.HandlerFunc {
 			_ = c.Request.ParseForm()
 		}
 
-		var buf = new(bytes.Buffer)
-		_, _ = buf.ReadFrom(c.Request.Body)
-		var content = buf.String()
-		c.Request.Body = io.NopCloser(buf)
-
-		c.Next()
+		var content string
+		if c.Request.ContentLength > 0 {
+			var buf = new(bytes.Buffer)
+			_, _ = buf.ReadFrom(c.Request.Body)
+			content = buf.String()
+			c.Request.Body = io.NopCloser(buf)
+		}
 
 		zap.L().Info("HttpRequest",
 			zap.String("url", c.Request.URL.String()),
@@ -317,7 +318,7 @@ func ResponseLogger() gin.HandlerFunc {
 			return
 		}
 		var w = &responseBodyWriter{
-			body:           &bytes.Buffer{},
+			body:           new(bytes.Buffer),
 			ResponseWriter: c.Writer,
 		}
 		c.Writer = w
