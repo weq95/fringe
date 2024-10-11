@@ -10,12 +10,9 @@ import (
 	"gorm.io/gorm/logger"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
-)
-
-const (
-	logFilePath = "./logs/"
 )
 
 var cfgSec *AppCfg
@@ -173,7 +170,8 @@ func (a *AppCfg) validate() error {
 }
 
 func LoadConfig() error {
-	var cfgFileName = "cfg.yaml"
+	var workdir, _ = os.Getwd()
+	var cfgFileName = fmt.Sprintf("%s/%s.yaml", workdir, filepath.Base(os.Args[0]))
 	if _, err := os.Stat(cfgFileName); os.IsNotExist(err) {
 		var envFileName = ".example.yaml"
 		var envFile, err01 = os.OpenFile(envFileName, os.O_RDWR|os.O_CREATE, 0644)
