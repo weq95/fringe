@@ -20,7 +20,7 @@ import (
 
 var gormDB *gorm.DB
 
-func NewDatabase() error {
+func NewDatabase(write logger.Writer) error {
 	var logLevel uint8
 	var dsn = Val(func(cfg *AppCfg) interface{} {
 		logLevel = cfg.Mysql.LogLevel
@@ -31,7 +31,7 @@ func NewDatabase() error {
 
 	var err error
 	gormDB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{
-		Logger: logger.New(NewLogger(int8(logLevel)), logger.Config{
+		Logger: logger.New(write, logger.Config{
 			SlowThreshold:             0,
 			LogLevel:                  logger.LogLevel(logLevel),
 			IgnoreRecordNotFoundError: true,
