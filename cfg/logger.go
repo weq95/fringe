@@ -2,6 +2,7 @@ package cfg
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -9,6 +10,7 @@ import (
 	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/zapcore"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -280,56 +282,69 @@ func (r responseBodyWriter) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
-func RequestLogger() gin.HandlerFunc {
+func HttpWebLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if c.ContentType() == binding.MIMEMultipartPOSTForm {
 			c.Next()
 			return
 		}
 		var statrTime = time.Now()
-		if c.ContentType() != binding.MIMEJSON {
-			_ = c.Request.ParseForm()
-		}
-
-		var content string
+		var request string
 		if c.Request.ContentLength > 0 {
 			var buf = new(bytes.Buffer)
 			_, _ = buf.ReadFrom(c.Request.Body)
-			content = buf.String()
+			if buf.Len() == 0 && c.ContentType() != binding.MIMEJSON {
+				_ = c.Request.ParseForm()
+				buf.WriteString(c.Request.Form.Encode())
+			}
+			request = buf.String()
 			c.Request.Body = io.NopCloser(buf)
 		}
 
-		zap.L().Info("HttpRequest",
-			zap.String("url", c.Request.URL.String()),
-			zap.String("ip", c.ClientIP()),
-			zap.String("method", c.Request.Method),
-			zap.String("latency", fmt.Sprintf("%v", time.Since(statrTime))),
-			zap.Any("header", c.Request.Header),
-			zap.String("from", c.Request.Form.Encode()),
-			zap.String("body", content),
-		)
-	}
-}
-
-func ResponseLogger() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if c.ContentType() == binding.MIMEMultipartPOSTForm {
-			c.Next()
-			return
-		}
-		var w = &responseBodyWriter{
+		var writer = &responseBodyWriter{
 			body:           new(bytes.Buffer),
 			ResponseWriter: c.Writer,
 		}
-		c.Writer = w
+		c.Writer = writer
 
 		c.Next()
 
-		zap.L().Info("HttpResponse",
-			zap.String("url", c.Request.URL.String()),
-			zap.Int("status", c.Writer.Status()),
-			zap.Any("header", c.Writer.Header()),
-			zap.String("content", w.body.String()),
+		var logger, ok = c.Value("zap").(*zap.Logger)
+		if !ok {
+			logger = zap.L()
+		}
+
+		var formatfn = func(original []byte, val any, hdr http.Header) map[string]string {
+			if strings.Contains(hdr.Get("Content-Type"), binding.MIMEJSON) {
+				_ = json.Unmarshal(original, &val)
+			}
+			var hname = make(map[string]string, len(hdr))
+			for key, array := range hdr {
+				var headerval = new(bytes.Buffer)
+				for i, value := range array {
+					var spilt = ""
+					if i > 0 {
+						spilt = "; "
+					}
+					headerval.WriteString(spilt + value)
+				}
+				hname[key] = headerval.String()
+			}
+
+			return hname
+		}
+		var requestany, responseany any = request, writer.body.String()
+		var h1 = formatfn([]byte(request), &requestany, c.Request.Header)
+		var h2 = formatfn(writer.body.Bytes(), &responseany, c.Writer.Header())
+		logger.Info(c.Request.URL.String(),
+			zap.String("ip", c.ClientIP()),
+			zap.String("method", c.Request.Method),
+			zap.String("latency", fmt.Sprintf("%v", time.Since(statrTime))),
+			zap.Any("request_hdr", h1),
+			zap.Any("request_body", requestany),
+			zap.Int("http_status", c.Writer.Status()),
+			zap.Any("response_hdr", h2),
+			zap.Any("response_body", responseany),
 		)
 	}
 }
