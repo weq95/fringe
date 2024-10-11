@@ -1,11 +1,14 @@
 package cfg
 
 import (
+	"bytes"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"go.uber.org/zap"
 	"go.uber.org/zap/buffer"
 	"go.uber.org/zap/zapcore"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -63,15 +66,14 @@ func (l *CustomLogger) Printf(_ string, i ...interface{}) {
 }
 
 func NewLogger(level int8) *CustomLogger {
-	var _, file = filepath.Split(os.Args[0])
 	var dir, _ = os.Getwd()
 
-	var filePath = fmt.Sprintf("%s/logs/%s/", dir, file)
+	var filePath = fmt.Sprintf("%s/logs/%s/", dir, filepath.Base(os.Args[0]))
 	_ = os.MkdirAll(filePath, os.ModePerm)
 
 	var log = &CustomLogger{filePath: filePath, level: zapcore.Level(level)}
 	log.NewLogFile(true)
-	zap.ReplaceGlobals(log.StartLogger(log.JsonFormat()))
+	zap.ReplaceGlobals(log.StartLogger(log.TextFormat()))
 
 	return log
 }
@@ -153,7 +155,7 @@ func (l *CustomLogger) NewLogFile(startApp bool) {
 	gin.DefaultWriter = ginLog
 	gin.DefaultErrorWriter = ginLog
 
-	go CleanLogFiles(l.filePath)
+	_ = CleanLogFiles(l.filePath)
 }
 
 func (l *CustomLogger) Write(ent zapcore.Entry, fields []zapcore.Field) error {
@@ -196,7 +198,7 @@ func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 		CallerKey:    "fs",
 		EncodeCaller: caller,
 		EncodeLevel:  zapcore.CapitalLevelEncoder,
-		EncodeTime:   zapcore.TimeEncoderOfLayout(time.TimeOnly),
+		EncodeTime:   zapcore.TimeEncoderOfLayout(time.TimeOnly + "000000"),
 	}
 
 	// cmd 控制台输出格式
@@ -212,7 +214,7 @@ func (l *CustomLogger) format() map[string]zapcore.EncoderConfig {
 	var value = map[string]zapcore.EncoderConfig{
 		"file": fileCfg,
 	}
-	if l.level-1 < -1 {
+	if l.level < 0 {
 		value["std"] = stdinCfg
 	}
 
@@ -266,4 +268,67 @@ func (l *CustomLogger) CloseFile() {
 	_ = zap.L().Sync()
 	_ = l.logFile.Close()
 	_ = l.errLogFile.Close()
+}
+
+type responseBodyWriter struct {
+	gin.ResponseWriter
+	body *bytes.Buffer
+}
+
+func (r responseBodyWriter) Write(b []byte) (int, error) {
+	r.body.Write(b)
+	return r.ResponseWriter.Write(b)
+}
+
+func RequestLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.ContentType() == binding.MIMEMultipartPOSTForm {
+			c.Next()
+			return
+		}
+		var statrTime = time.Now()
+		if c.ContentType() != binding.MIMEJSON {
+			_ = c.Request.ParseForm()
+		}
+
+		var buf = new(bytes.Buffer)
+		_, _ = buf.ReadFrom(c.Request.Body)
+		var content = buf.String()
+		c.Request.Body = io.NopCloser(buf)
+
+		c.Next()
+
+		zap.L().Info("HttpRequest",
+			zap.String("url", c.Request.URL.String()),
+			zap.String("ip", c.ClientIP()),
+			zap.String("method", c.Request.Method),
+			zap.String("latency", fmt.Sprintf("%v", time.Since(statrTime))),
+			zap.Any("header", c.Request.Header),
+			zap.String("from", c.Request.Form.Encode()),
+			zap.String("body", content),
+		)
+	}
+}
+
+func ResponseLogger() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if c.ContentType() == binding.MIMEMultipartPOSTForm {
+			c.Next()
+			return
+		}
+		var w = &responseBodyWriter{
+			body:           &bytes.Buffer{},
+			ResponseWriter: c.Writer,
+		}
+		c.Writer = w
+
+		c.Next()
+
+		zap.L().Info("HttpResponse",
+			zap.String("url", c.Request.URL.String()),
+			zap.Int("status", c.Writer.Status()),
+			zap.Any("header", c.Writer.Header()),
+			zap.String("content", w.body.String()),
+		)
+	}
 }
