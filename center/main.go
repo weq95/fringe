@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"fringe/center/business"
@@ -11,18 +9,30 @@ import (
 	"fringe/cfg"
 	"fringe/netsrv"
 	"github.com/gin-gonic/gin"
-	"github.com/gin-gonic/gin/binding"
 	"go.uber.org/zap"
-	"io"
 	"net/http"
 	"strconv"
 	"time"
 )
 
+type DeferManager struct {
+	fns []func()
+}
+
 func main() {
 	var tcpSrvAddr string
 	var port string
 	var logLevel int8
+	var df = DeferManager{
+		fns: make([]func(), 0, 10),
+	}
+	defer func() {
+		for i := len(df.fns) - 1; i >= 0; i-- {
+			if df.fns[i] != nil {
+				df.fns[i]()
+			}
+		}
+	}()
 	_ = cfg.Val(func(cfg *cfg.AppCfg) interface{} {
 		tcpSrvAddr = cfg.ServerTcpAddr
 		port = ":" + strconv.Itoa(int(cfg.ServerHttpPort))
@@ -31,10 +41,10 @@ func main() {
 
 		return nil
 	})
-	_ = cfg.NewLogger(logLevel)
-	defer func() {
+	var logger = cfg.NewLogger(logLevel)
+	df.fns = append(df.fns, func() {
 		_ = zap.L().Sync()
-	}()
+	})
 	var m, err = netsrv.GetManager().AddServer(
 		map[string]netsrv.TcpClients{
 			tcpSrvAddr: router.NewSrvRouter(),
@@ -43,9 +53,11 @@ func main() {
 		zap.L().Error(err.Error())
 		return
 	}
-	defer m.ServerClosed()
+	df.fns = append(df.fns, func() {
+		m.ServerClosed()
+	})
 
-	if err = cfg.NewDatabase(); err != nil {
+	if err = cfg.NewDatabase(logger); err != nil {
 		zap.L().Error(err.Error())
 		return
 	}
@@ -53,12 +65,13 @@ func main() {
 		zap.L().Error(err.Error())
 		return
 	}
-	defer cfg.ClosedRedis()
+	df.fns = append(df.fns, func() {
+		cfg.ClosedRedis()
+	})
 
 	business.SyncData()
 	var r = gin.New()
 	r.Use(
-		gin.Logger(),
 		func(c *gin.Context) {
 			method := c.Request.Method
 			origin := c.Request.Header.Get("Origin")
@@ -79,63 +92,8 @@ func main() {
 
 			c.Next()
 		},
-		func(c *gin.Context) {
-			defer c.Next()
-			if !gin.IsDebugging() {
-				return
-			}
-			var types = map[string]struct{}{
-				binding.MIMEJSON:              {},
-				binding.MIMEPlain:             {},
-				binding.MIMEPOSTForm:          {},
-				binding.MIMEMultipartPOSTForm: {},
-			}
-
-			var body = map[string]any{
-				"content": "empty body",
-			}
-			defer func() {
-				zap.L().Debug("request",
-					zap.String("url-query", c.Request.URL.String()),
-					zap.String("method", c.Request.Method),
-					zap.String("content-type", c.ContentType()),
-					zap.Any("body", body),
-				)
-			}()
-			if _, ok := types[c.ContentType()]; !ok {
-				return
-			}
-			if c.Request.ContentLength == 0 {
-				return
-			}
-			if c.ContentType() == binding.MIMEMultipartPOSTForm {
-				body["name"] = "[文件]"
-				return
-			}
-
-			var buffer = new(bytes.Buffer)
-			if _, err = buffer.ReadFrom(c.Request.Body); err != nil {
-				if errors.Is(err, io.EOF) {
-					return
-				}
-
-				body["error"] = fmt.Sprintf("Http Body Read Err: %+v", err)
-				return
-			}
-
-			_ = json.Unmarshal(buffer.Bytes(), &body)
-			c.Request.Body = io.NopCloser(buffer)
-		},
-		func(c *gin.Context) {
-			var startTime = time.Now()
-			c.Next()
-			if time.Now().Sub(startTime).Seconds() > 1 {
-				zap.L().Warn("[HttpWeb] 慢请求",
-					zap.String("url", c.Request.URL.String()),
-					zap.String("method", c.Request.Method),
-				)
-			}
-		},
+		cfg.ResponseLogger(),
+		cfg.RequestLogger(),
 		gin.CustomRecoveryWithWriter(gin.DefaultErrorWriter, func(c *gin.Context, err any) {
 			if err == nil {
 				return
@@ -161,7 +119,9 @@ func main() {
 	<-cfg.WaitCtrlC()
 	zap.L().Info("Shutdown Server ...")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	df.fns = append(df.fns, func() {
+		cancel()
+	})
 
 	if err = srv.Shutdown(ctx); err != nil {
 		zap.L().Fatal(fmt.Sprintf("Server Shutdown: %v", err))
