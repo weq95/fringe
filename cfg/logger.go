@@ -284,7 +284,9 @@ func (r responseBodyWriter) Write(b []byte) (int, error) {
 
 func HttpWebLogger() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.ContentType() == binding.MIMEMultipartPOSTForm {
+		if c.ContentType() == binding.MIMEMultipartPOSTForm ||
+			(strings.ToLower(c.GetHeader("Upgrade")) == "websocket" &&
+				strings.Contains(strings.ToLower(c.GetHeader("Connection")), "upgrade")) {
 			c.Next()
 			return
 		}
