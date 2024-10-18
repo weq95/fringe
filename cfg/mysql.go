@@ -63,8 +63,6 @@ func GetDB() *gorm.DB {
 	return gormDB.Debug()
 }
 
-var xormDB = new(sync.Map)
-
 type SliceAny []interface{}
 
 func (s SliceAny) FromDB(data []byte) error {
@@ -77,7 +75,7 @@ func (s SliceAny) ToDB() ([]byte, error) {
 
 func DB02() *xorm.Engine {
 	return Val(func(cfg *AppCfg) interface{} {
-		var engine, _ = xormDB.Load(cfg.Mysql.DBName)
+		var engine, _ = GetDynamicCore().dbs.Load(cfg.Mysql.DBName)
 		return engine
 	}).(*xorm.Engine)
 }
@@ -89,7 +87,7 @@ func EngineMultiple() map[string]*xorm.Engine {
 		return cfg.Mysql.DBName
 	}).(string)
 
-	xormDB.Range(func(name, engine any) bool {
+	GetDynamicCore().dbs.Range(func(name, engine any) bool {
 		if name.(string) != defName {
 			result[name.(string)] = engine.(*xorm.Engine)
 		}
@@ -102,7 +100,7 @@ func EngineMultiple() map[string]*xorm.Engine {
 // DBOperations 数据库操作
 func DBOperations(dbname string, fn func(db *xorm.Engine) (any, error)) (any, error) {
 	dbname = strings.ToUpper(dbname)
-	if engine, ok := xormDB.Load(dbname); ok {
+	if engine, ok := GetDynamicCore().dbs.Load(dbname); ok {
 		return fn(engine.(*xorm.Engine))
 	}
 
@@ -156,7 +154,7 @@ func (d *DynamicSyncDB) AddDBNewEngine(m Mysql, dbname string) (*xorm.Engine, er
 }
 
 func XOrmCloseAll() {
-	xormDB.Range(func(_, db any) bool {
+	GetDynamicCore().dbs.Range(func(_, db any) bool {
 		_ = db.(*xorm.Engine).Close()
 		return true
 	})
@@ -196,42 +194,6 @@ func (t Tables) Update4Fields(currSeq int) (int64, error) {
 			"next_seq",
 			"uptime",
 		}...).Update(t)
-}
-
-func GetTablesMap(db *xorm.Engine) (map[string]map[string]Tables, error) {
-	var result = make(map[string]map[string]Tables)
-	var tables []Tables
-	var err = db.Cols([]string{"id", "db_name", "incr_id",
-		"curr_seq", "curr_seq", "next_seq"}...).Find(&tables)
-	if err != nil {
-		return result, err
-	}
-
-	for _, i2 := range tables {
-		if _, ok := result[i2.DBName]; !ok {
-			result[i2.DBName] = make(map[string]Tables)
-		}
-
-		result[i2.DBName][i2.Name] = i2
-	}
-
-	return result, nil
-}
-
-func GetTablesArray(db *xorm.Engine) (map[string][]Tables, error) {
-	var result = make(map[string][]Tables)
-	var tables []Tables
-	var err = db.Cols([]string{"id", "db_name", "incr_id",
-		"curr_seq", "curr_seq", "next_seq"}...).Find(&tables)
-	if err != nil {
-		return result, err
-	}
-
-	for _, i2 := range tables {
-		result[i2.DBName] = append(result[i2.DBName], i2)
-	}
-
-	return result, nil
 }
 
 type DBRedisCache struct {
