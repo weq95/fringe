@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -74,7 +75,7 @@ func (s SliceAny) ToDB() ([]byte, error) {
 	return json.Marshal(s)
 }
 
-func Db02() *xorm.Engine {
+func DB02() *xorm.Engine {
 	return Val(func(cfg *AppCfg) interface{} {
 		var engine, _ = xormDB.Load(cfg.Mysql.DBName)
 		return engine
@@ -108,24 +109,32 @@ func DBOperations(dbname string, fn func(db *xorm.Engine) (any, error)) (any, er
 	return nil, errors.New(fmt.Sprintf("db[%s] not found", dbname))
 }
 
-func AddDBEngine(m Mysql, dbname string) (*xorm.Engine, error) {
+// AddDBNewEngine 创建新的数据库链接
+func (d *DynamicSyncDB) AddDBNewEngine(m Mysql, dbname string) (*xorm.Engine, error) {
+	if d.creating {
+		return nil, errors.New("db creating...")
+	}
+	d.creatlock.Lock()
+	d.creating = true
+	defer func() {
+		d.creating = false
+		d.creatlock.Unlock()
+	}()
 	var err error
-	if e, ok := xormDB.Load(dbname); ok {
-		zap.L().Warn(fmt.Sprintf("db_name[%s] link already exists", dbname))
+	if e, ok := d.dbs.Load(dbname); ok {
 		_ = e.(*xorm.Engine).Close()
-
-		xormDB.Delete(dbname)
+		d.dbs.Delete(dbname)
 		zap.L().Warn(fmt.Sprintf("db_name[%s] execute close link and regenerate new link", dbname))
 	}
 
 	var link = fmt.Sprintf("%s:%s@tcp(%s)/", m.Username, m.Password, m.Addr)
-	var engine, err01 = xorm.NewEngine("mysql", link)
-	if err01 != nil {
-		return nil, err01
+	var engine *xorm.Engine
+	if engine, err = xorm.NewEngine("mysql", link); err != nil {
+		return nil, err
 	}
 
-	_, err = engine.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE 'utf8mb4_0900_ai_ci';", dbname))
-	if err != nil {
+	var createdb = fmt.Sprintf("CREATE DATABASE IF NOT EXISTS `%s` CHARACTER SET utf8mb4 COLLATE 'utf8mb4_0900_ai_ci';", dbname)
+	if _, err = engine.Exec(createdb); err != nil {
 		return nil, err
 	}
 
@@ -141,7 +150,7 @@ func AddDBEngine(m Mysql, dbname string) (*xorm.Engine, error) {
 	engine.SetMaxIdleConns(int(m.MaxIdleConns))
 	engine.SetConnMaxLifetime(time.Duration(m.ConnMaxLifetime) * time.Hour)
 
-	xormDB.Store(dbname, engine)
+	d.dbs.Store(dbname, engine)
 
 	return engine, engine.Ping()
 }
@@ -157,11 +166,36 @@ type Tables struct {
 	Id        int       `json:"id" xorm:"autoincr pk"`
 	DBName    string    `json:"db_name" xorm:"db_name"`
 	Name      string    `json:"name" xorm:"name"`
-	IncrId    uint64    `json:"incr_id" xorm:"incr_id"`
+	IncrId    int64     `json:"incr_id" xorm:"incr_id"`
 	CurrSeq   uint      `json:"curr_seq" xorm:"curr_seq"`
 	NextSeq   uint      `json:"next_seq" xorm:"next_seq"`
 	CreatedAt time.Time `json:"created_at" xorm:"created_at"`
 	UpdateAt  time.Time `json:"update_at" xorm:"update_at"`
+}
+
+func (t Tables) CacheValue(exits bool) map[string]any {
+	var cacheValue = map[string]any{
+		"sync":     false,
+		"incr_id":  t.IncrId,
+		"curr_seq": t.CurrSeq,
+		"next_seq": t.NextSeq,
+	}
+	if exits {
+		cacheValue["incr_id"] = 0
+	}
+
+	return cacheValue
+}
+
+func (t Tables) Update4Fields(currSeq int) (int64, error) {
+	return DB02().ID(t.Id).
+		Where("curr_seq=?", currSeq).
+		Cols([]string{
+			"incr_id",
+			"curr_seq",
+			"next_seq",
+			"uptime",
+		}...).Update(t)
 }
 
 func GetTablesMap(db *xorm.Engine) (map[string]map[string]Tables, error) {
@@ -200,100 +234,236 @@ func GetTablesArray(db *xorm.Engine) (map[string][]Tables, error) {
 	return result, nil
 }
 
-type DBCacheInfo struct {
-	IncrId uint64 `json:"incr_id" redis:"incr_id"`
-	Sync   bool   `json:"sync" redis:"sync"`
-	CurrDB uint   `json:"curr" redis:"curr"`
-	NextDB uint   `json:"next" redis:"next"`
+type DBRedisCache struct {
+	IncrId     int64 `json:"incr_id" redis:"incr_id"`
+	Sync       bool  `json:"sync" redis:"sync"`
+	CurrDB     uint  `json:"curr" redis:"curr"`
+	NextDB     uint  `json:"next" redis:"next"`
+	TransferAt int64 `json:"tf_at" redis:"tf_at"`
 }
 
-func (d DBCacheInfo) KEY(dbname, tableName string) string {
-	return fmt.Sprintf("%s.%s", dbname, tableName)
+func (d DBRedisCache) KEY(dbname, tbname string) string {
+	return fmt.Sprintf("%s.%s", dbname, tbname)
 }
 
-func (d DBCacheInfo) MarshalBinary() ([]byte, error) {
+func (d DBRedisCache) MarshalBinary() ([]byte, error) {
 	return json.Marshal(d)
 }
 
-func (d *DBCacheInfo) UnmarshalBinary(data []byte) error {
+func (d *DBRedisCache) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, d)
 }
 
-var dynamicSubTable = &DBDynamicSubTable{
-	status: new(sync.Map),
-	lock:   new(sync.RWMutex),
+type DynamicSyncDB struct {
+	creatlock  *sync.Mutex
+	selectlock *sync.Mutex
+	creating   bool
+	selecting  bool
+	dbs        sync.Map
+	maxlimit   uint64
+	dyntbname  func(tbname string, currseq int) string
 }
 
-func DynamicTable() *DBDynamicSubTable {
-	return dynamicSubTable
+var dynamic *DynamicSyncDB
+
+func GetDynamicCore() *DynamicSyncDB {
+	if dynamic == nil {
+		dynamic = &DynamicSyncDB{
+			creating:   false,
+			creatlock:  new(sync.Mutex),
+			selecting:  false,
+			selectlock: new(sync.Mutex),
+			dbs:        sync.Map{},
+			maxlimit:   0,
+			dyntbname: func(tbname string, currseq int) string {
+				return fmt.Sprintf("%s_%04d", tbname, currseq)
+			},
+		}
+	}
+
+	return dynamic
 }
 
-type DBDynamicSubTable struct {
-	status *sync.Map
-	lock   *sync.RWMutex
+// GetTableLimitCfg 获取配置文件中表存储最大条数
+func (d *DynamicSyncDB) GetTableLimitCfg(tbname, field string) uint64 {
+	if d.maxlimit > 0 {
+		return d.maxlimit
+	}
+	if tbname == "" || field == "" {
+		d.maxlimit = uint64(20000000)
+		return d.maxlimit
+	}
+
+	var maxlimit uint64
+	var _, err = d.DBOperations(tbname, func(db *xorm.Engine) (any, error) {
+		return db.SQL("SELECT `%s` FROM `%s` LIMIT 1;", tbname, field).Get(&maxlimit)
+	})
+	if err != nil {
+		zap.L().Error(err.Error())
+		maxlimit = uint64(20000000)
+	}
+	if maxlimit > 0 {
+		d.maxlimit = maxlimit
+	}
+
+	return d.maxlimit
 }
 
-const TableMaxLimit uint64 = 50000000
+// DBOperations 获取数据库链接
+func (d *DynamicSyncDB) DBOperations(dbname string, fn func(db *xorm.Engine) (any, error)) (any, error) {
+	dbname = strings.ToUpper(dbname)
+	if engine, ok := d.dbs.Load(dbname); ok {
+		return fn(engine.(*xorm.Engine))
+	}
 
-func (d DBDynamicSubTable) Init(startApp bool) any {
+	return nil, errors.New(fmt.Sprintf("db[%s] not found", dbname))
+}
+
+// SelectNewDBCfg 新数据库配置
+func (d *DynamicSyncDB) SelectNewDBCfg(b bool) (map[string]Database, error) {
+	var array []Database
+	var session = DB02().Where(" 1=1 ")
+	if b {
+		session = session.Where("type=0")
+	}
+
+	if err := session.Find(&array); err != nil {
+		return nil, err
+	}
+
+	var result = make(map[string]Database, len(array))
+	for _, database := range array {
+		result[database.Name] = database
+	}
+
+	return result, nil
+}
+
+// DynTableInit 初始化
+func (d *DynamicSyncDB) DynTableInit(startapp bool) any {
 	return Val(func(cfg *AppCfg) interface{} {
 		var err error
-		if startApp {
-			if _, err = AddDBEngine(cfg.Mysql, cfg.Mysql.DBName); err != nil {
+		if startapp {
+			if _, err = d.AddDBNewEngine(cfg.Mysql, cfg.Mysql.DBName); err != nil {
 				return err
 			}
-
-			// 获取数据库配置的分表条数
-			// TableMaxLimit,没有配置使用默认配置
 		}
 
-		var dynamicDB map[string]Database
-		if dynamicDB, err = DatabaseIndex(startApp); err != nil {
+		var newlinks map[string]Database
+		if newlinks, err = d.SelectNewDBCfg(startapp); err != nil {
 			return err
 		}
 
-		for _, db := range dynamicDB {
-			if _, err = AddDBEngine(cfg.Mysql, db.Name); err != nil {
+		for _, db := range newlinks {
+			if _, err = d.AddDBNewEngine(cfg.Mysql, db.Name); err != nil {
 				return err
 			}
 
 			_ = db.UpdateType(db.Name)
 		}
 
-		return d.ScheduleTableCreation(startApp)
+		return d.ScheduleTableCreation(context.TODO())
 	})
 }
 
-func (d DBDynamicSubTable) ShardId(count uint64) uint64 {
-	return (count / TableMaxLimit) + 1
-}
-
-func (d DBDynamicSubTable) CacheValue(table Tables, exits bool) map[string]any {
-	var cacheValue = map[string]any{
-		"sync":     false,
-		"incr_id":  table.IncrId,
-		"curr_seq": table.CurrSeq,
-		"next_seq": table.NextSeq,
-	}
-	if exits {
-		cacheValue["incr_id"] = 0
+func (d *DynamicSyncDB) GetTables(db *xorm.Engine) (map[string][]Tables, error) {
+	var result = make(map[string][]Tables)
+	var tables []Tables
+	var err = db.Cols([]string{"id", "db_name", "incr_id",
+		"curr_seq", "curr_seq", "next_seq"}...).Find(&tables)
+	if err != nil {
+		return result, err
 	}
 
-	return cacheValue
+	for _, i2 := range tables {
+		result[i2.DBName] = append(result[i2.DBName], i2)
+	}
+
+	return result, nil
 }
 
-// ScheduleTableCreation 计划建表
-func (d *DBDynamicSubTable) ScheduleTableCreation(isInit bool) error {
-	zap.L().Debug("ScheduleTableCreation 计划建表Start")
-	var tables, err = GetTablesArray(Db02())
+// GetDynTName 动态获取表名
+func (d *DynamicSyncDB) GetDynTName(dbname, tbname string) string {
+	var cache DBRedisCache
+	var i int8
+	var r = GetRedis()
+	var ctx = context.Background()
+	var err error
+GetRedisDBCache:
+	if err = r.HGetAll(ctx, cache.KEY(dbname, tbname)).Scan(&cache); err != nil {
+		zap.L().Error(err.Error())
+	}
+
+	if cache.CurrDB == 0 {
+		i += 1
+		if i < 5 {
+			goto GetRedisDBCache
+		}
+
+		cache.CurrDB = cache.NextDB - 1
+		if cache.NextDB == 0 {
+			cache.CurrDB = 1
+		}
+	}
+
+	var dyname = d.dyntbname(tbname, int(cache.CurrDB))
+	if uint64(cache.IncrId) < d.GetTableLimitCfg("", "") {
+		return dyname
+	}
+
+	d.selectlock.Lock()
+	if d.selecting {
+		d.selectlock.Unlock()
+		return dyname
+	}
+	d.selecting = true
+	d.selectlock.Unlock()
+	defer func() {
+		d.selectlock.Lock()
+		d.selecting = false
+		d.selectlock.Unlock()
+	}()
+	zap.L().Warn("Redis TableMaxLimit Overflow. [ GetDynTName ]",
+		zap.Uint64("max_limit", d.GetTableLimitCfg("", "")),
+		zap.String("dbname", dbname),
+		zap.String("table", tbname),
+		zap.Any("cache", cache),
+	)
+
+	var result Tables
+	var exits bool
+	if exits, err = DB02().Where("name=? AND db_name=?", tbname, dbname).Get(&result); err != nil {
+		zap.L().Error("[ GetDynTName ] Exec Err", zap.Error(err))
+		return dyname
+	}
+
+	if !exits {
+		zap.L().Error("[ GetDynTName ] Exec Err. Table Not Found", zap.String("dbname", dbname), zap.String("tbname", tbname))
+		return dyname
+	}
+
+	_, err = DBOperations(dbname, func(db *xorm.Engine) (any, error) {
+		return nil, d.CreateTableSQL(context.TODO(), db, &result, r, cache)
+	})
+	if err != nil {
+		zap.L().Error("[ GetDynTName ] Exec Err", zap.Error(err))
+		return dyname
+	}
+
+	dyname = d.dyntbname(tbname, int(cache.CurrDB))
+	zap.L().Warn("[ GetDynTName ] Successful.", zap.String("dbname", dbname), zap.String("tbname", tbname))
+	return dyname
+
+}
+
+// ScheduleTableCreation 定时任务｜计划建表
+func (d *DynamicSyncDB) ScheduleTableCreation(ctx context.Context) error {
+	var tables, err = d.GetTables(DB02())
 	if err != nil {
 		return err
 	}
 
-	zap.L().Debug("获取 [db.tables] 数据成功", zap.Any("tables", tables))
 	var r = GetRedis()
-	var ctx = context.Background()
-
 	for dbname, engine := range EngineMultiple() {
 		var table, ok = tables[dbname]
 		if !ok {
@@ -302,182 +472,104 @@ func (d *DBDynamicSubTable) ScheduleTableCreation(isInit bool) error {
 		}
 
 		for _, t := range table {
-			var dbCache DBCacheInfo
-			var cacheExits = r.Exists(ctx, dbCache.KEY(dbname, t.Name)).Val() > 0
-			_ = r.HGetAll(ctx, dbCache.KEY(dbname, t.Name)).Scan(&dbCache)
-			if isInit {
-				if t.CurrSeq > 0 {
-					var total int64
-					var shardTableName = fmt.Sprintf("%s_%s", t.Name,
-						fmt.Sprintf("%04d", t.CurrSeq))
-					_, err = engine.Table(shardTableName).Select("id").OrderBy("id DESC").Limit(1).Get(&total)
-					if err != nil {
-						zap.L().Error(err.Error())
-					}
-					if total == 0 {
-						dbCache.IncrId = uint64(total)
-					}
-					t.IncrId = uint64(total)
-				}
-
-				if !cacheExits || dbCache.CurrDB == 0 || dbCache.CurrDB != t.CurrSeq {
-					r.HSet(ctx, dbCache.KEY(dbname, t.Name), d.CacheValue(t, false))
-				}
-			}
-			zap.L().Debug("tables redis 缓存信息",
-				zap.String("key", dbCache.KEY(dbname, t.Name)),
-				zap.Bool("dbCache_exits", cacheExits),
-				zap.Any("db_cache", dbCache),
-			)
-
-			if dbCache.IncrId > 0 {
-				if dbCache.IncrId > t.IncrId {
-					t.IncrId = dbCache.IncrId
-				}
-				if isInit && dbCache.IncrId == 0 {
-					dbCache.IncrId = 0
-				}
-			}
-
-			var status = (t.CurrSeq >= t.NextSeq-1 && float64(t.IncrId) >= float64(TableMaxLimit)*0.8) ||
-				isInit && float64(t.IncrId) >= float64(TableMaxLimit)*0.8
-
-			if !status && t.CurrSeq-1 > 0 {
-				continue
-			}
-
-			if err = d.CreateTable(engine, &t); err != nil {
-				zap.L().Error(fmt.Sprintf("CreateTable Err: %s", err.Error()))
+			var cache DBRedisCache
+			_ = r.HGetAll(ctx, cache.KEY(dbname, t.Name)).Scan(&cache)
+			if err = d.CreateTableSQL(ctx, engine, &t, r, cache); err != nil {
 				return err
 			}
-			d.status.Store(dbCache.KEY(dbname, t.Name), false)
-			zap.L().Debug(fmt.Sprintf("[%s] 自动建表Success", t.Name))
-			_ = r.HSet(ctx, dbCache.KEY(dbname, t.Name), d.CacheValue(t, cacheExits))
-
 		}
 	}
 
-	zap.L().Info("ScheduleTableCreation 计划建表End[Success]")
 	return nil
 }
 
-// GetTableName 获取动态表名
-func (d *DBDynamicSubTable) GetTableName(dbname, tablePrefix string) string {
-	var dbCache DBCacheInfo
-	var i int8
-	var r = GetRedis()
-	var ctx = context.Background()
-	var err error
-GetRedisDBCache:
-	err = r.HGetAll(ctx, dbCache.KEY(dbname, tablePrefix)).Scan(&dbCache)
-	if err != nil {
-		zap.L().Error(err.Error())
+// CreateTableSQL 三种情况：
+// 1. 表不存在，创建且不能切换插入表
+// 2. 数据量到达80%及以上且新表未被创建，不切换插入表
+// 3. 数据量到达100%，必须切换插入表
+func (d *DynamicSyncDB) CreateTableSQL(ctx context.Context, db *xorm.Engine, tb *Tables, rds *redis.Client, cache DBRedisCache) error {
+	d.creatlock.Lock()
+	if d.creating {
+		d.creatlock.Unlock()
+		return nil
 	}
-
-	if dbCache.CurrDB == 0 {
-		i += 1
-
-		if i < 10 {
-			goto GetRedisDBCache
-		}
-
-		dbCache.CurrDB = dbCache.NextDB - 1
-		if dbCache.NextDB == 0 {
-			dbCache.CurrDB = 1
-		}
-	}
-
-	var tableName = fmt.Sprintf("%04d", dbCache.CurrDB)
-	if dbCache.IncrId < TableMaxLimit {
-		return tableName
-	}
-	if !(dbCache.CurrDB+1 > dbCache.NextDB) {
-		return tableName
-	}
-
-	zap.L().Warn("TableMaxLimit Overflow. [GetTableName]被动建表Start",
-		zap.Uint64("table_max_limit", TableMaxLimit),
-		zap.String("dbname", dbname),
-		zap.String("table", tablePrefix),
-		zap.Any("db_cache", dbCache),
-	)
-	if exits, _ := d.status.Load(dbCache.KEY(dbname, tablePrefix)); exits.(bool) {
-		return tableName
-	}
-
-	var t Tables
-	var exits bool
-	exits, err = Db02().Where("name=? AND db_name=?", tablePrefix, dbname).Get(&t)
-	if err != nil {
-		zap.L().Error(err.Error())
-		return tableName
-	}
-
-	if !exits {
-		return tableName
-	}
-
-	zap.L().Warn("table info", zap.Any("table", t))
-	_, err = DBOperations(dbname, func(db *xorm.Engine) (any, error) {
-		t.CurrSeq += 1
-		return nil, d.CreateTable(db, &t)
-	})
-	if err != nil {
-		zap.L().Error(err.Error())
-		return tableName
-	}
-
-	d.status.Store(dbCache.KEY(dbname, tablePrefix), true)
-	var cacheValue = d.CacheValue(t, true)
-	zap.L().Warn("[GetTableName]被动建表End.Success",
-		zap.Any("table", t),
-		zap.Any("cache_value", cacheValue),
-	)
-	_ = r.HSet(ctx, dbCache.KEY(dbname, tablePrefix), cacheValue)
-	tableName = fmt.Sprintf("%04d", t.CurrSeq)
-
-	return tableName
-}
-
-// CreateTable 创建表，并发安全
-func (d DBDynamicSubTable) CreateTable(db *xorm.Engine, t *Tables) error {
-	d.lock.Lock()
-	defer d.lock.Unlock()
-
-	if t.NextSeq <= 0 {
-		t.NextSeq = 1
-	}
-
-	var tableStatementMap = d.TableStatementMap()
-	var tSQl, ok = tableStatementMap[t.Name]
+	d.creating = true
+	d.creatlock.Unlock()
+	defer func() {
+		d.creatlock.Lock()
+		d.creating = false
+		d.creatlock.Unlock()
+	}()
+	var sqlstr, ok = d.SystemDynTSQL()[tb.Name]
 	if !ok {
-		return errors.New(fmt.Sprintf("system table %s statement not found", t.Name))
-	}
-	var tableName = fmt.Sprintf("%s_%s", t.Name, fmt.Sprintf("%04d", t.NextSeq))
-	t.NextSeq += 1
-	t.IncrId = 1
-	t.UpdateAt = time.Now()
-	if t.CurrSeq == 0 {
-		t.CurrSeq += 1
+		return errors.New("system create table( " + tb.Name + " ) sql not found")
 	}
 
-	var _, err = db.Exec(fmt.Sprintf(tSQl, tableName, 0))
+	// 获取表数据，并且判断当前表是否存在
+	var total int64
+	var tbname = d.dyntbname(tb.Name, int(tb.CurrSeq))
+	var exits, err = db.Table(tbname).Select("id").Get(&total)
 	if err != nil {
 		return err
 	}
 
-	_, err = Db02().ID(t.Id).Cols("incr_id", "curr_seq", "next_seq", "updated_at").Update(t)
-	if err != nil {
+	var maxlimit = d.GetTableLimitCfg("config", "total")
+	var currseq = tb.CurrSeq
+	if false == exits { //表不存在
+		if cache.CurrDB > 0 {
+			tb.CurrSeq = cache.CurrDB //数据插入时，表名从获取
+		}
+		if tb.CurrSeq <= 0 {
+			tb.CurrSeq = 1
+		}
+		tb.NextSeq = tb.CurrSeq
+		tbname = d.dyntbname(tb.Name, int(tb.CurrSeq))
+	} else if uint64(total) >= maxlimit { //表中数据达到最大条数
+		tb.IncrId = 0
+		tb.CurrSeq += 1
+		tb.NextSeq = tb.CurrSeq + 1
+		cache.Sync = false
+		tbname = d.dyntbname(tb.Name, int(tb.CurrSeq))
+	} else if float64(total) >= float64(maxlimit)*0.8 { //表中数据达到80%阈值
+		if cache.Sync && tb.CurrSeq+1 == tb.NextSeq { //表已经创建
+			return err
+		}
+		tb.NextSeq = tb.CurrSeq + 1
+		tb.IncrId = total
+		tbname = d.dyntbname(tb.Name, int(tb.NextSeq))
+	} else {
+		zap.L().Debug("_NOT_CREATE_TABLE_",
+			zap.Any("tb", tb),
+			zap.Any("cache", cache),
+			zap.Int64("total", total),
+		)
 		return err
 	}
 
-	zap.L().Debug(fmt.Sprintf("create %s success", tableName))
+	sqlstr = fmt.Sprintf(sqlstr, tbname)
+	zap.L().Debug("_CREATE_TABLE_SQL_",
+		zap.String("sql", sqlstr),
+		zap.Any("tb", tb),
+		zap.Any("cache", cache),
+		zap.Int64("total", total),
+	)
+	if _, err = db.Exec(sqlstr); err != nil {
+		return err
+	}
+	tb.CreatedAt = time.Now()
 
+	cache.IncrId = tb.IncrId
+	cache.CurrDB = tb.CurrSeq
+	cache.NextDB = tb.NextSeq
+	cache.TransferAt = tb.CreatedAt.Unix()
+	err = rds.HSet(ctx, cache.KEY(tb.DBName, tb.Name), cache).Err()
+	zap.L().Warn(fmt.Sprintf("create %s success.", tbname), zap.Error(err))
+
+	_, err = tb.Update4Fields(int(currseq))
 	return err
 }
 
-// TableStatementMap 建表语句
-func (d DBDynamicSubTable) TableStatementMap() map[string]string {
+func (_ *DynamicSyncDB) SystemDynTSQL() map[string]string {
 	return map[string]string{
 		"bill": `CREATE TABLE IF NOT EXISTS %s
 (
@@ -493,23 +585,25 @@ func (d DBDynamicSubTable) TableStatementMap() map[string]string {
     before_amount int unsigned NOT NULL DEFAULT '0' COMMENT '操作前',
     after_amount  int unsigned NOT NULL DEFAULT '0' COMMENT '操作后',
     api_name      varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT 'api名称',
-    create_at     int unsigned NOT NULL DEFAULT '0' COMMENT '创建时间',
+    created_at    int unsigned NOT NULL DEFAULT '0' COMMENT '创建时间',
     PRIMARY KEY (id),
-    KEY             user_id_unique_key (user_id,unique_key)
-) ENGINE=InnoDB AUTO_INCREMENT=%d DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`,
+    KEY             user_id_unique_key (user_id,unique_key),
+	KEY 			platform_index_key (platform)
+) ENGINE=InnoDB AUTO_INCREMENT=0 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`,
 
-		"req_detail": `CREATE TABLE IF NOT EXISTS %s
+		"detail": `CREATE TABLE IF NOT EXISTS %s
 (
     id         int unsigned NOT NULL AUTO_INCREMENT,
     user_id    int unsigned NOT NULL DEFAULT '0' COMMENT '用户id',
     mf         varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL DEFAULT '' COMMENT '子厂商',
+    tx_key     varchar(200) NOT NULL DEFAULT '' COMMENT '注单key',
     unique_key varchar(100)                                                 NOT NULL DEFAULT '' COMMENT '请求唯一key',
     api_name   varchar(20)                                                  NOT NULL DEFAULT '' COMMENT '接口名称',
     details    json                                                         NOT NULL COMMENT '请求参数',
     created_at int unsigned NOT NULL DEFAULT '0' COMMENT '创建时间',
     PRIMARY KEY (id),
-    KEY          user_id_and_mf (user_id,mf)
-) ENGINE=InnoDB AUTO_INCREMENT=%d DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`,
+    KEY user_id_and_tx_key (user_id,tx_key,api_name) USING BTREE
+) ENGINE=InnoDB AUTO_INCREMENT=0 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;`,
 	}
 }
 
@@ -523,7 +617,7 @@ type Database struct {
 func (d Database) UpdateType(dbname string) (err error) {
 	d.Type = 1
 	d.UpdateAt = time.Now()
-	var db = Db02()
+	var db = DB02()
 	if _, err = db.ID(d.Id).Cols("type", "update_at").Update(&d); err != nil {
 		return
 	}
@@ -536,29 +630,11 @@ func (d Database) UpdateType(dbname string) (err error) {
 
 		return result
 	}
-	_, err = db.Exec(fmt.Sprintf(`INSERT INTO tables (incr_id, name, db_name) VALUES
-                                ( 1, 'bill', '%s'),
-								( 1, 'req_detail', '%s'),
-;`, params(2, dbname)))
+	_, err = db.Exec(fmt.Sprintf(`
+INSERT INTO tables (incr_id, name, db_name) VALUES
+( 0, 'bill', '%s'),
+( 0, 'req_detail', '%s')
+`, params(2, dbname)))
 
 	return
-}
-
-func DatabaseIndex(b bool) (map[string]Database, error) {
-	var array []Database
-	var session = Db02().Where(" 1=1 ")
-	if b {
-		session = session.Where("type=0")
-	}
-
-	if err := session.Find(&array); err != nil {
-		return nil, err
-	}
-
-	var result = make(map[string]Database, len(array))
-	for _, database := range array {
-		result[database.Name] = database
-	}
-
-	return result, nil
 }
